@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Estilos do Original (Marloncio v35) */
+@layer base {
+  body {
+    @apply bg-slate-50 text-slate-800 font-sans;
+  }
+}
+
+/* Scrollbar Personalizada (Idêntica ao HTML) */
+.custom-scroll::-webkit-scrollbar { width: 6px; }
+.custom-scroll::-webkit-scrollbar-track { background: #f1f5f9; }
+.custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+.custom-scroll::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* Input Clean (Simulador Financeiro) */
+.input-clean { 
+  background: transparent; 
+  border: none; 
+  border-bottom: 1px solid #cbd5e1; 
+  width: 100%; 
+  text-align: right; 
+  font-weight: 600; 
+  color: #334155; 
+  padding-right: 2px; 
+}
+.input-clean:focus { 
+  outline: none; 
+  border-bottom-color: #0891b2; 
+  background-color: #f0f9ff; 
+}
+
+/* Animações */
+.fade-in { animation: fadeIn 0.3s ease-in-out; }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* Impressão */
+@media print {
+  .no-print { display: none !important; }
+  body { background: white; -webkit-print-color-adjust: exact; }
+  .print-break-inside-avoid { break-inside: avoid; }
+  @page { size: landscape; margin: 1cm; }
+}
