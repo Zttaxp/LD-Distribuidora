@@ -83,3 +83,49 @@ export async function getManualScenario(monthKey) {
     
   return data || null;
 }
+
+// --- VENDEDORES & METAS ---
+
+export async function saveSellerGoal(sellerName, monthKey, value) {
+  const supabase = await createClient();
+  
+  const { error } = await supabase
+    .from('seller_goals')
+    .upsert({ 
+      seller_name: sellerName, 
+      month_key: monthKey, 
+      goal_value: value 
+    }, { onConflict: 'seller_name, month_key' });
+
+  if (error) throw new Error('Erro ao salvar meta: ' + error.message);
+  revalidatePath('/');
+  return { success: true };
+}
+
+export async function getSellerDetails(seller, month, year) {
+  const supabase = await createClient();
+  const monthKey = `${year}-${month}`; // Formato: 2025-1
+
+  // 1. Busca as vendas detalhadas desse vendedor no mês
+  const { data: sales, error } = await supabase
+    .from('sales')
+    .select('*')
+    .eq('seller', seller)
+    .eq('year', year)
+    .eq('month', month);
+
+  if (error) throw new Error('Erro ao buscar vendas: ' + error.message);
+
+  // 2. Busca a meta definida
+  const { data: goalData } = await supabase
+    .from('seller_goals')
+    .select('goal_value')
+    .eq('seller_name', seller)
+    .eq('month_key', monthKey)
+    .single();
+
+  return {
+    sales: sales || [],
+    goal: goalData?.goal_value || 0
+  };
+}
