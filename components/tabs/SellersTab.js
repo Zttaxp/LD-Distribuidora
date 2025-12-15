@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from 'react';
-import { Target, Trophy, Filter, Download, Calendar, DollarSign, List, Truck, Calculator, Loader2, ChevronDown, ChevronRight, Layers } from 'lucide-react';
+import { Target, Trophy, Filter, Download, Calendar, DollarSign, List, Truck, Calculator, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
 import { getSellerDetails, saveSellerGoal } from '@/app/actions';
 
 export default function SellersTab({ sellers = [], settings }) {
@@ -11,10 +11,9 @@ export default function SellersTab({ sellers = [], settings }) {
   const [detailData, setDetailData] = useState({ sales: [], goal: 0 });
   const [localGoal, setLocalGoal] = useState(0);
   
-  // Estado para controlar quais clientes estão expandidos (abertos)
   const [expandedClients, setExpandedClients] = useState({});
 
-  // --- 1. FILTROS E CARREGAMENTO ---
+  // --- 1. FILTROS ---
   const sellersList = useMemo(() => {
     if (!sellers || !Array.isArray(sellers)) return [];
     const names = sellers.filter(s => s && s.seller).map(s => s.seller);
@@ -44,7 +43,7 @@ export default function SellersTab({ sellers = [], settings }) {
         const result = await getSellerDetails(selectedSeller, month, year);
         setDetailData(result || { sales: [], goal: 0 });
         setLocalGoal(result?.goal || 0);
-        setExpandedClients({}); // Reseta expansão ao trocar filtro
+        setExpandedClients({});
       } catch (error) { 
         console.error(error); 
         setDetailData({ sales: [], goal: 0 });
@@ -63,9 +62,6 @@ export default function SellersTab({ sellers = [], settings }) {
 
   // --- 2. CÁLCULOS GERAIS ---
   const salesList = detailData?.sales || [];
-  
-  // Taxas Globais
-  const taxRate = Number(settings?.tax_rate || 6);
   const commRate = Number(settings?.comm_rate || 3);
 
   const totals = useMemo(() => {
@@ -80,7 +76,9 @@ export default function SellersTab({ sellers = [], settings }) {
   const grossRevenue = totals.netRevenue + totals.freight;
   const avgPrice = totals.m2 > 0 ? totals.netRevenue / totals.m2 : 0;
   const commission = totals.netRevenue * (commRate / 100);
-  const totalProfit = totals.netRevenue - totals.cost - (totals.netRevenue * (taxRate/100)) - commission;
+  
+  // ALTERAÇÃO: Lucro Real agora é apenas (Venda Líquida - Custo)
+  const totalProfit = totals.netRevenue - totals.cost;
 
   const goal = Number(localGoal) || 0;
   const progressPct = goal > 0 ? (totals.netRevenue / goal) * 100 : 0;
@@ -97,20 +95,21 @@ export default function SellersTab({ sellers = [], settings }) {
           name: client, 
           items: [],
           totalM2: 0,
-          totalRevenue: 0, // Venda Pedra
+          totalRevenue: 0,
           totalFreight: 0,
           totalCost: 0,
-          totalGross: 0 // Nota
+          totalGross: 0
         };
       }
       
-      // Cálculos Individuais por Venda (Para exibir na tabela detalhada)
       const sRev = Number(sale.revenue || 0);
       const sCost = Number(sale.cost || 0);
-      const sTaxes = sRev * (taxRate / 100);
-      const sComm = sRev * (commRate / 100);
-      const sProfit = sRev - sCost - sTaxes - sComm;
-      // Fórmula solicitada: (Lucro / Custo) * 100
+      
+      // ALTERAÇÃO: Cálculo Individual (Lucro = Venda - Custo)
+      const sProfit = sRev - sCost;
+      
+      // ALTERAÇÃO: Margem = ((Venda - Custo) / Custo) * 100
+      // Nota: sProfit já é (Venda - Custo)
       const sMargin = sCost > 0 ? (sProfit / sCost) * 100 : 0;
 
       const itemWithCalc = {
@@ -121,7 +120,6 @@ export default function SellersTab({ sellers = [], settings }) {
 
       groups[client].items.push(itemWithCalc);
       
-      // Somatórios do Grupo
       groups[client].totalM2 += Number(sale.m2_total || 0);
       groups[client].totalRevenue += sRev;
       groups[client].totalFreight += Number(sale.freight || 0);
@@ -129,17 +127,15 @@ export default function SellersTab({ sellers = [], settings }) {
       groups[client].totalGross += (sRev + Number(sale.freight || 0));
     });
 
-    // Calcula Lucro e Margem do Grupo Inteiro
     return Object.values(groups).map(g => {
-        const gTaxes = g.totalRevenue * (taxRate / 100);
-        const gComm = g.totalRevenue * (commRate / 100);
-        const gProfit = g.totalRevenue - g.totalCost - gTaxes - gComm;
+        // ALTERAÇÃO: Cálculo do Grupo (Lucro = Venda - Custo)
+        const gProfit = g.totalRevenue - g.totalCost;
         const gMargin = g.totalCost > 0 ? (gProfit / g.totalCost) * 100 : 0;
         
         return { ...g, profit: gProfit, margin: gMargin };
-    }).sort((a, b) => b.totalRevenue - a.totalRevenue); // Ordena por quem comprou mais
+    }).sort((a, b) => b.totalRevenue - a.totalRevenue);
 
-  }, [salesList, taxRate, commRate]);
+  }, [salesList]); // Removido dependência de taxas pois não são mais usadas no lucro
 
 
   const formatBRL = (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
@@ -206,9 +202,9 @@ export default function SellersTab({ sellers = [], settings }) {
               <p className="text-[9px] text-slate-400">Venda + Frete</p>
             </div>
             <div className="px-4">
-              <p className="text-[10px] text-slate-300 uppercase font-bold">Lucro Total</p>
+              <p className="text-[10px] text-slate-300 uppercase font-bold">Lucro Real (Bruto)</p>
               <p className={`text-lg font-bold mt-1 ${totalProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>{formatBRL(totalProfit)}</p>
-              <p className="text-[9px] text-slate-400">Realizado</p>
+              <p className="text-[9px] text-slate-400">Venda - CMV</p>
             </div>
             <div className="px-4">
               <p className="text-[10px] text-slate-300 uppercase font-bold flex items-center gap-1"><Trophy size={12}/> Comissão ({commRate}%)</p>
@@ -229,7 +225,6 @@ export default function SellersTab({ sellers = [], settings }) {
                   <div className="p-8 text-center text-slate-400 text-sm">Nenhuma venda encontrada.</div>
                ) : (
                   <div className="divide-y divide-slate-100">
-                     {/* Cabeçalho da Tabela Principal */}
                      <div className="grid grid-cols-12 bg-slate-100 p-3 text-xs font-bold text-slate-600 uppercase">
                         <div className="col-span-4 pl-8">Cliente</div>
                         <div className="col-span-1 text-right">M²</div>
@@ -243,7 +238,6 @@ export default function SellersTab({ sellers = [], settings }) {
                         const isExpanded = expandedClients[group.name];
                         return (
                            <div key={idx} className="bg-white transition-colors hover:bg-slate-50">
-                              {/* Linha Resumo do Cliente */}
                               <div 
                                 onClick={() => toggleClient(group.name)} 
                                 className="grid grid-cols-12 p-3 text-xs items-center cursor-pointer border-l-4 border-transparent hover:border-cyan-500"
@@ -265,7 +259,6 @@ export default function SellersTab({ sellers = [], settings }) {
                                  </div>
                               </div>
 
-                              {/* Tabela Detalhada (Expandida) */}
                               {isExpanded && (
                                  <div className="bg-slate-50 border-t border-b border-slate-100 p-2 pl-8 animate-in slide-in-from-top-2 duration-200">
                                     <table className="w-full text-[10px] text-left">
@@ -297,7 +290,7 @@ export default function SellersTab({ sellers = [], settings }) {
                                        </tbody>
                                     </table>
                                     <div className="text-[9px] text-slate-400 mt-2 italic text-right pr-2">
-                                       * Lucro Real = Venda - Custo - Impostos({taxRate}%) - Comissão({commRate}%) | Margem = (Lucro/Custo)*100
+                                       * Lucro = Venda Líq. - CMV (Custo) | Margem = (Lucro/CMV)*100
                                     </div>
                                  </div>
                               )}
