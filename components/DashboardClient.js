@@ -36,28 +36,34 @@ export default function DashboardClient({
   const [activeTab, setActiveTab] = useState('overview');
   const [isUploading, setIsUploading] = useState(false);
   
-  // Dados vindos do Servidor (Server Components)
-  // Não usamos setState aqui pois esses dados são atualizados via router.refresh()
+  // Dados vindos do Servidor
   const summaryData = initialSummary || [];
   const topMaterials = initialTopMaterials || [];
   const sellersData = initialSellers || [];
 
   const fileInputRef = useRef(null);
 
-  // Lógica de Upload (Importar Excel)
+  // --- LÓGICA DE UPLOAD COM DEBUG DETALHADO ---
   const handleFileUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     setIsUploading(true);
     try {
+      console.log("--- INICIANDO UPLOAD DE DEBUG ---");
+      console.log("1. Arquivo selecionado:", file.name, `(${file.size} bytes)`);
+
       // 1. Salvar arquivo no Storage
       const fileName = `${Date.now()}_${file.name}`;
       const { error: uploadError } = await supabase.storage
         .from('uploads')
         .upload(fileName, file);
 
-      if (uploadError) throw uploadError;
+      if (uploadError) {
+        console.error("ERRO NO STORAGE:", uploadError);
+        throw new Error(`Falha ao salvar arquivo no bucket: ${uploadError.message}`);
+      }
+      console.log("2. Upload no Storage concluído.");
 
       // 2. Criar registro do dataset
       const { data: datasetData, error: datasetError } = await supabase
@@ -66,33 +72,65 @@ export default function DashboardClient({
         .select()
         .single();
 
-      if (datasetError) throw datasetError;
+      if (datasetError) {
+        console.error("ERRO AO CRIAR DATASET:", datasetError);
+        throw new Error(`Falha ao registrar dataset: ${datasetError.message}`);
+      }
+      console.log("3. Dataset registrado no banco. ID:", datasetData.id);
 
       // 3. Ler e Parsear Excel
       const buffer = await file.arrayBuffer();
       const workbook = XLSX.read(buffer, { type: 'array' });
       const sheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[sheetName];
+      
+      // Converte para JSON bruto (array de arrays)
       const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+      console.log(`4. Leitura do Excel concluída. Linhas encontradas: ${jsonData.length}`);
 
+      if (jsonData.length < 2) {
+        throw new Error("O arquivo Excel parece estar vazio ou tem apenas o cabeçalho.");
+      }
+
+      // Processa os dados usando o Parser corrigido
       const parsedSales = parseExcelData(jsonData, datasetData.id);
+      console.log(`5. Parser concluído. Linhas válidas para inserção: ${parsedSales.length}`);
 
-      // 4. Inserir vendas em lotes (Chunks)
+      if (parsedSales.length === 0) {
+        console.warn("AVISO: O parser retornou 0 linhas. Verifique se as colunas da planilha batem com a lógica do parser.");
+        throw new Error("Nenhuma venda válida foi encontrada na planilha. Verifique o formato.");
+      }
+
+      // 4. Inserir vendas em lotes (Chunks) para evitar timeout
+      console.log("6. Iniciando inserção no banco de dados...");
       const chunkSize = 1000;
+      let insertedCount = 0;
+
       for (let i = 0; i < parsedSales.length; i += chunkSize) {
         const chunk = parsedSales.slice(i, i + chunkSize);
         const { error: insertError } = await supabase.from('sales').insert(chunk);
-        if (insertError) throw insertError;
+        
+        if (insertError) {
+          console.error(`ERRO NO INSERT (Lote ${i}):`, insertError);
+          // Se for erro de RLS, vai aparecer aqui explicitamente
+          if (insertError.code === '42501') {
+            throw new Error("Erro de Permissão (RLS): Seu usuário não tem permissão para inserir vendas.");
+          }
+          throw insertError;
+        }
+        insertedCount += chunk.length;
+        console.log(`   - Lote inserido: ${insertedCount} / ${parsedSales.length}`);
       }
 
-      alert('Importação concluída com sucesso!');
+      console.log("7. SUCESSO TOTAL! Todas as linhas inseridas.");
+      alert(`Sucesso! ${insertedCount} vendas foram importadas.`);
       
-      // Atualiza a página inteira (Server Component) sem recarregar o browser
+      // Atualiza a página para mostrar os dados novos
       router.refresh(); 
 
     } catch (error) {
-      console.error('Erro no upload:', error);
-      alert('Erro ao processar arquivo: ' + error.message);
+      console.error('--- ERRO FATAL NO PROCESSO ---', error);
+      alert(`Erro no processo: ${error.message}`);
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -114,7 +152,6 @@ export default function DashboardClient({
       case 'annual':
         return <AnnualTab summary={summaryData} />;
       case 'sellers':
-        // Agora passamos os dados prontos da View
         return <SellersTab sellers={sellersData} />;
       default:
         return <OverviewTab summary={summaryData} topMaterials={topMaterials} />;
