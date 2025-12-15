@@ -1,177 +1,596 @@
 "use client";
-import { useState, useMemo } from "react";
-import { Settings, Calculator, Trash2, Plus, RefreshCw } from "lucide-react";
 
-// Componente de linha do DRE
-function DRESingleLine({ label, val, color, isInput, onChange, placeholder }) {
-  const formatBRL = (v) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
+import { useState, useEffect, useMemo } from 'react';
+import { 
+  Settings, 
+  FileMinus, 
+  Plus, 
+  Trash2, 
+  RefreshCw, 
+  Loader2 
+} from 'lucide-react';
+import { Bar } from 'react-chartjs-2';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend
+} from 'chart.js';
+import { 
+  updateSettings, 
+  addExpense, 
+  deleteExpense, 
+  saveManualScenario, 
+  getManualScenario 
+} from '@/app/actions';
+
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend
+);
+
+export default function FinancialTab({ 
+  summary, 
+  settings, 
+  expenses, 
+  onSettingsChange, 
+  onExpensesChange 
+}) {
+  // --- ESTADOS ---
+  const [selectedMonth, setSelectedMonth] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [manualData, setManualData] = useState(null); // Dados do simulador manual
   
-  return (
-    <div className="flex justify-between items-center text-xs text-slate-500 py-1.5 border-b border-slate-50 last:border-0">
-      <span className="font-medium text-slate-600">{label}</span>
-      {isInput ? (
-        <input 
-          type="number" 
-          value={val || ''} 
-          placeholder={placeholder ? placeholder.toFixed(2) : '0.00'}
-          onChange={(e) => onChange(parseFloat(e.target.value))}
-          className="text-right w-24 bg-indigo-50 border-b border-indigo-300 focus:outline-none text-indigo-700 font-bold p-1 rounded-sm"
-        />
-      ) : (
-        <span className={`${color} font-bold`}>{formatBRL(val)}</span>
-      )}
-    </div>
-  );
-}
+  // Estados Locais para Inputs (Taxas e Despesas)
+  const [localSettings, setLocalSettings] = useState(settings);
+  const [newExpense, setNewExpense] = useState({ name: '', value: '', type: 'FIXED' });
 
-export default function FinancialTab({ sales, selectedEndMonth, finParams, setFinParams, expenses, setExpenses }) {
-  const [newExpense, setNewExpense] = useState({ name: "", val: "", type: "FIXED" });
+  // 1. Preparar Lista de Meses Disponíveis
+  const months = useMemo(() => {
+    return [...summary]
+      .sort((a, b) => (b.year - a.year) || (b.month - a.month)) // Mais recente primeiro
+      .map(item => ({
+        key: `${item.year}-${item.month}`, // Ex: 2025-1
+        label: new Date(item.year, item.month - 1, 1).toLocaleString('pt-BR', { month: 'long', year: 'numeric' })
+      }));
+  }, [summary]);
+
+  // Inicializa com o mês mais recente
+  useEffect(() => {
+    if (months.length > 0 && !selectedMonth) {
+      setSelectedMonth(months[0].key);
+    }
+  }, [months, selectedMonth]);
+
+  // Carrega Cenário Manual ao trocar de mês
+  useEffect(() => {
+    if (!selectedMonth) return;
+    async function loadScenario() {
+      const data = await getManualScenario(selectedMonth);
+      setManualData(data);
+    }
+    loadScenario();
+  }, [selectedMonth]);
+
+  // --- CÁLCULOS DO REALIZADO (SYSTEM DATA) ---
+  const currentSummary = summary.find(s => `${s.year}-${s.month}` === selectedMonth) || {};
   
-  // Estado Local para o Simulador Manual
-  const [manualScenario, setManualScenario] = useState({
-    gross: null, freight: null, fixed: null, variable: null
-  });
+  // Valores Base Realizados
+  const sysGross = currentSummary.total_revenue || 0; // Assumindo revenue do banco como bruto ou ajustável
+  const sysFreight = 0; // Se tiver coluna de frete no futuro, ajuste aqui
+  const sysNetRev = sysGross - sysFreight;
+  const sysCMV = currentSummary.total_cost || 0;
+  
+  // Taxas do Banco
+  const rateTax = Number(settings.tax_rate) || 0;
+  const rateComm = Number(settings.comm_rate) || 0;
+  const rateBad = Number(settings.bad_debt_rate) || 0;
 
-  const loadRealToSim = () => {
-    // Copia os dados reais para o input manual
-    setManualScenario({
-      gross: financialData.realized.grossRev,
-      freight: financialData.realized.freight,
-      fixed: financialData.realized.fixedExp,
-      variable: financialData.realized.varExp
-    });
+  // Cálculos Derivados Realizado
+  const sysTaxes = sysNetRev * (rateTax / 100);
+  const sysComms = sysNetRev * (rateComm / 100);
+  const sysBadDebt = sysNetRev * (rateBad / 100);
+  const sysMargin = sysNetRev - sysCMV - sysTaxes - sysComms - sysBadDebt;
+
+  // Despesas Realizadas
+  const currentExpenses = expenses || [];
+  const sysFixedExp = currentExpenses
+    .filter(e => e.type === 'FIXED')
+    .reduce((acc, curr) => acc + Number(curr.value), 0);
+    
+  const sysVarExp = currentExpenses
+    .filter(e => e.type === 'VARIABLE' && e.month_key === selectedMonth)
+    .reduce((acc, curr) => acc + Number(curr.value), 0);
+
+  const sysProfit = sysMargin - sysFixedExp - sysVarExp;
+  const sysProfitPct = sysNetRev > 0 ? (sysProfit / sysNetRev) * 100 : 0;
+
+  // --- CÁLCULOS DO SIMULADO (MANUAL DATA) ---
+  // Se existir manualData, usa ele. Se não, herda do sistema.
+  const manGross = manualData?.gross_revenue ?? sysGross;
+  const manFreight = manualData?.freight ?? sysFreight;
+  const manNetRev = manGross - manFreight;
+  
+  const manCMV = manualData?.cmv ?? sysCMV;
+  // Taxas Manuais (podem ser sobrescritas)
+  const manRateTax = manualData?.tax_rate ?? rateTax;
+  const manRateComm = manualData?.comm_rate ?? rateComm;
+  
+  const manTaxes = manNetRev * (manRateTax / 100);
+  const manComms = manNetRev * (manRateComm / 100);
+  const manBadDebt = manNetRev * (rateBad / 100); // Inadimplência geralmente herda a global
+  
+  const manMargin = manNetRev - manCMV - manTaxes - manComms - manBadDebt;
+  
+  const manFixedExp = manualData?.fixed_expenses ?? sysFixedExp;
+  const manVarExp = manualData?.variable_expenses ?? sysVarExp;
+  
+  const manProfit = manMargin - manFixedExp - manVarExp;
+  const manProfitPct = manNetRev > 0 ? (manProfit / manNetRev) * 100 : 0;
+
+  // --- HANDLERS ---
+
+  // Salvar Configurações Gerais
+  const handleSaveSettings = async () => {
+    setLoading(true);
+    try {
+      await updateSettings(localSettings);
+      onSettingsChange(localSettings); // Atualiza estado global
+      alert('Configurações salvas!');
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const financialData = useMemo(() => {
-    // --- REALIZADO ---
-    const targetData = sales.filter(s => s.date.substring(0, 7) === selectedEndMonth);
-    const r_gross = targetData.reduce((a, b) => a + b.revenue + b.freight, 0);
-    const r_freight = targetData.reduce((a, b) => a + b.freight, 0);
-    const r_net = r_gross - r_freight;
-    const r_cmv = targetData.reduce((a, b) => a + (b.cost || 0), 0);
-    const r_cmv_pct = r_net > 0 ? r_cmv / r_net : 0; 
+  // Adicionar Despesa
+  const handleAddExpense = async () => {
+    if (!newExpense.name || !newExpense.value) return;
+    setLoading(true);
+    try {
+      const payload = {
+        ...newExpense,
+        month_key: newExpense.type === 'VARIABLE' ? selectedMonth : null
+      };
+      const { data } = await addExpense(payload);
+      onExpensesChange([...expenses, data]); // Atualiza lista global
+      setNewExpense({ name: '', value: '', type: 'FIXED' }); // Limpa form
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    const r_taxes = r_net * (finParams.tax / 100);
-    const r_comm = r_net * (finParams.comm / 100);
-    const r_bad = r_net * (finParams.badDebt / 100);
-    const r_fixed = expenses.filter(e => e.type === 'FIXED').reduce((a,b) => a + b.val, 0);
-    const r_var = expenses.filter(e => e.type === 'VARIABLE').reduce((a,b) => a + b.val, 0);
-    const r_profit = (r_net - r_cmv - r_taxes - r_comm - r_bad) - r_fixed - r_var;
+  // Apagar Despesa
+  const handleDeleteExpense = async (id) => {
+    if(!confirm('Apagar despesa?')) return;
+    try {
+      await deleteExpense(id);
+      onExpensesChange(expenses.filter(e => e.id !== id));
+    } catch (e) {
+      alert(e.message);
+    }
+  };
 
-    // --- SIMULADO ---
-    const s_gross = manualScenario.gross !== null ? manualScenario.gross : r_gross;
-    const s_freight = manualScenario.freight !== null ? manualScenario.freight : r_freight;
-    const s_net = s_gross - s_freight;
-    const s_cmv = s_net * r_cmv_pct; 
-    
-    const s_taxes = s_net * (finParams.tax / 100);
-    const s_comm = s_net * (finParams.comm / 100);
-    const s_bad = s_net * (finParams.badDebt / 100);
-    const s_fixed = manualScenario.fixed !== null ? manualScenario.fixed : r_fixed;
-    const s_variable = manualScenario.variable !== null ? manualScenario.variable : r_var;
-    
-    const s_profit = (s_net - s_cmv - s_taxes - s_comm - s_bad) - s_fixed - s_variable;
-
-    return {
-      realized: { grossRev: r_gross, freight: r_freight, netRev: r_net, cmv: r_cmv, taxes: r_taxes, comm: r_comm, badDebt: r_bad, fixedExp: r_fixed, varExp: r_var, profit: r_profit },
-      simulated: { grossRev: s_gross, freight: s_freight, netRev: s_net, cmv: s_cmv, taxes: s_taxes, comm: s_comm, badDebt: s_bad, fixedExp: s_fixed, varExp: s_variable, profit: s_profit }
+  // Atualizar Simulador Manual (Debounce ou Blur)
+  const handleManualUpdate = async (field, value) => {
+    const newData = {
+      month_key: selectedMonth,
+      gross_revenue: manGross,
+      freight: manFreight,
+      cmv: manCMV,
+      tax_rate: manRateTax,
+      comm_rate: manRateComm,
+      fixed_expenses: manFixedExp,
+      variable_expenses: manVarExp,
+      ...{ [field]: Number(value) }
     };
-  }, [sales, selectedEndMonth, finParams, expenses, manualScenario]);
 
-  const addExpense = () => {
-    if (!newExpense.name || !newExpense.val) return;
-    setExpenses([...expenses, { ...newExpense, id: Date.now(), val: parseFloat(newExpense.val) }]);
-    setNewExpense({ name: "", val: "", type: "FIXED" });
+    // Atualiza estado local imediatamente para feedback visual
+    setManualData(prev => ({ ...prev, ...newData }));
+
+    // Salva no banco (Server Action)
+    await saveManualScenario(newData);
   };
 
-  const formatBRL = (v) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
+  const handleResetManual = async () => {
+    if(!confirm("Resetar simulação para os valores originais?")) return;
+    setManualData(null);
+    // O ideal seria apagar do banco também, mas null localmente já resolve visualmente
+    // Se quiser apagar: await deleteManualScenario(selectedMonth);
+  };
+
+  // Formatação Moeda
+  const formatBRL = (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
+  const formatPct = (val) => `${val.toFixed(1)}%`;
+
+  // Dados do Gráfico Comparativo
+  const chartData = {
+    labels: ['Faturamento', 'Margem Contrib.', 'Lucro Líquido'],
+    datasets: [
+      {
+        label: 'Realizado',
+        data: [sysGross, sysMargin, sysProfit],
+        backgroundColor: '#94a3b8',
+        borderRadius: 4
+      },
+      {
+        label: 'Simulado',
+        data: [manGross, manMargin, manProfit],
+        backgroundColor: '#6366f1',
+        borderRadius: 4
+      }
+    ]
+  };
 
   return (
-    <div className="space-y-6 fade-in">
+    <div className="space-y-6 fade-in pb-10">
+      
+      {/* 1. TOPO: Parâmetros e Despesas */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* PARÂMETROS */}
+        
+        {/* Card Parâmetros Globais */}
         <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-          <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><Settings className="w-4 h-4"/> Parâmetros Globais</h3>
+          <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2 text-sm">
+            <Settings size={16} /> Parâmetros (Aplicados no Realizado)
+          </h3>
           <div className="grid grid-cols-3 gap-4">
-            <div><label className="text-[10px] font-bold text-slate-500 uppercase">Impostos %</label><input type="number" value={finParams.tax} onChange={e => setFinParams({...finParams, tax: parseFloat(e.target.value)||0})} className="w-full border border-slate-300 rounded text-sm p-1.5"/></div>
-            <div><label className="text-[10px] font-bold text-slate-500 uppercase">Comissão %</label><input type="number" value={finParams.comm} onChange={e => setFinParams({...finParams, comm: parseFloat(e.target.value)||0})} className="w-full border border-slate-300 rounded text-sm p-1.5"/></div>
-            <div><label className="text-[10px] font-bold text-slate-500 uppercase text-red-600">Inadimplência %</label><input type="number" value={finParams.badDebt} onChange={e => setFinParams({...finParams, badDebt: parseFloat(e.target.value)||0})} className="w-full border border-slate-300 rounded text-sm p-1.5"/></div>
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase">Impostos %</label>
+              <input 
+                type="number" 
+                value={localSettings.tax_rate}
+                onChange={e => setLocalSettings({...localSettings, tax_rate: e.target.value})}
+                onBlur={handleSaveSettings}
+                className="w-full border-slate-300 rounded text-sm p-1.5 focus:ring-cyan-500 focus:border-cyan-500"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase">Comissão %</label>
+              <input 
+                type="number" 
+                value={localSettings.comm_rate}
+                onChange={e => setLocalSettings({...localSettings, comm_rate: e.target.value})}
+                onBlur={handleSaveSettings}
+                className="w-full border-slate-300 rounded text-sm p-1.5 focus:ring-cyan-500 focus:border-cyan-500"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold text-red-500 uppercase">Inadimplência %</label>
+              <input 
+                type="number" 
+                value={localSettings.bad_debt_rate}
+                onChange={e => setLocalSettings({...localSettings, bad_debt_rate: e.target.value})}
+                onBlur={handleSaveSettings}
+                className="w-full border-slate-300 rounded text-sm p-1.5 focus:ring-cyan-500 focus:border-cyan-500"
+              />
+            </div>
           </div>
         </div>
-        
-        {/* DESPESAS */}
+
+        {/* Card Despesas */}
         <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-          <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><Calculator className="w-4 h-4"/> Despesas Extras</h3>
-          <div className="flex gap-2">
-            <input type="text" placeholder="Nome" value={newExpense.name} onChange={e => setNewExpense({...newExpense, name: e.target.value})} className="w-1/3 border border-slate-300 rounded text-xs p-2"/>
-            <input type="number" placeholder="R$" value={newExpense.val} onChange={e => setNewExpense({...newExpense, val: e.target.value})} className="w-1/4 border border-slate-300 rounded text-xs p-2"/>
-            <select value={newExpense.type} onChange={e => setNewExpense({...newExpense, type: e.target.value})} className="w-1/4 border border-slate-300 rounded text-xs p-2"><option value="FIXED">Fixa</option><option value="VARIABLE">Variável</option></select>
-            <button onClick={addExpense} className="bg-cyan-600 text-white rounded px-3 hover:bg-cyan-700"><Plus size={16}/></button>
+          <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2 text-sm">
+            <FileMinus size={16} /> Adicionar Despesa Extra
+          </h3>
+          <div className="flex gap-2 mb-3">
+            <input 
+              type="text" placeholder="Nome" 
+              className="w-1/3 border-slate-300 rounded text-xs p-2"
+              value={newExpense.name}
+              onChange={e => setNewExpense({...newExpense, name: e.target.value})}
+            />
+            <input 
+              type="number" placeholder="R$" 
+              className="w-1/4 border-slate-300 rounded text-xs p-2"
+              value={newExpense.value}
+              onChange={e => setNewExpense({...newExpense, value: e.target.value})}
+            />
+            <select 
+              className="w-1/4 border-slate-300 rounded text-xs p-2 bg-white"
+              value={newExpense.type}
+              onChange={e => setNewExpense({...newExpense, type: e.target.value})}
+            >
+              <option value="FIXED">Fixa</option>
+              <option value="VARIABLE">Variável</option>
+            </select>
+            <button 
+              onClick={handleAddExpense}
+              disabled={loading}
+              className="bg-cyan-600 text-white rounded px-3 py-1 hover:bg-cyan-700 disabled:opacity-50"
+            >
+              {loading ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+            </button>
           </div>
-          <div className="mt-2 space-y-1 max-h-20 overflow-y-auto custom-scroll">
-            {expenses.map(exp => (
-              <div key={exp.id} className="flex justify-between items-center text-xs bg-slate-50 p-2 rounded border border-slate-100">
-                <span>{exp.name}</span>
-                <div className="flex gap-2 items-center"><span className="font-bold text-red-500">- {formatBRL(exp.val)}</span><button onClick={() => setExpenses(expenses.filter(e => e.id !== exp.id))} className="text-slate-400 hover:text-red-500"><Trash2 size={12}/></button></div>
+          
+          <div className="max-h-24 overflow-y-auto space-y-1 custom-scroll">
+            {currentExpenses.map(exp => (
+              <div key={exp.id} className="flex justify-between items-center p-2 bg-slate-50 rounded text-xs border border-slate-100">
+                <div className="flex flex-col">
+                  <span className="font-medium text-slate-700">{exp.name}</span>
+                  <span className="text-[9px] text-slate-400">
+                    {exp.type === 'FIXED' ? 'Mensal (Fixa)' : `Variável (${exp.month_key})`}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-slate-700">{formatBRL(exp.value)}</span>
+                  <button onClick={() => handleDeleteExpense(exp.id)} className="text-red-400 hover:text-red-600">
+                    <Trash2 size={12} />
+                  </button>
+                </div>
               </div>
             ))}
           </div>
         </div>
       </div>
 
-      {/* DRE LADO A LADO */}
-      <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-         <div className="flex justify-between items-center mb-6">
-           <h3 className="font-bold text-slate-800 text-lg">DRE Comparativo: {selectedEndMonth}</h3>
-           <button onClick={loadRealToSim} className="text-xs flex items-center gap-1 text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded hover:bg-indigo-100 transition"><RefreshCw size={12}/> Copiar Real para Simulado</button>
-         </div>
-         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-           
-           {/* REALIZADO */}
-           <div className="bg-slate-50 p-6 rounded-xl border border-slate-200">
-             <h4 className="font-bold text-slate-500 uppercase text-xs mb-4 text-center border-b pb-2">Sistema (Real)</h4>
-             <div className="space-y-1">
-               <DRESingleLine label="(+) Faturamento" val={financialData.realized.grossRev} color="text-slate-800"/>
-               <DRESingleLine label="(-) Fretes" val={financialData.realized.freight} color="text-red-400"/>
-               <DRESingleLine label="(=) Rec. Líquida" val={financialData.realized.netRev} color="text-blue-700"/>
-               <div className="pl-2 border-l-2 border-slate-200 mt-2">
-                 <DRESingleLine label="(-) CMV" val={financialData.realized.cmv} color="text-red-600"/>
-                 <DRESingleLine label="(-) Impostos" val={financialData.realized.taxes} color="text-red-500"/>
-                 <DRESingleLine label="(-) Comissões" val={financialData.realized.comm} color="text-red-500"/>
-               </div>
-               <div className="mt-4 p-3 bg-white rounded border border-slate-200 flex justify-between items-center">
-                 <span className="font-bold text-slate-600">LUCRO REAL</span>
-                 <span className={`font-extrabold text-lg ${financialData.realized.profit >= 0 ? 'text-green-700' : 'text-red-600'}`}>{formatBRL(financialData.realized.profit)}</span>
-               </div>
-             </div>
-           </div>
-
-           {/* SIMULADO */}
-           <div className="bg-white p-6 rounded-xl border-2 border-indigo-100 relative shadow-inner">
-              <div className="absolute top-0 right-0 bg-indigo-100 text-indigo-700 text-[10px] font-bold px-2 py-1 rounded-bl-lg">EDITÁVEL</div>
-              <h4 className="font-bold text-indigo-600 uppercase text-xs mb-4 text-center border-b border-indigo-100 pb-2">Simulação</h4>
-              <div className="space-y-1">
-                <DRESingleLine label="(+) Faturamento" isInput={true} val={manualScenario.gross} onChange={v => setManualScenario({...manualScenario, gross: v})} placeholder={financialData.realized.grossRev}/>
-                <DRESingleLine label="(-) Fretes" isInput={true} val={manualScenario.freight} onChange={v => setManualScenario({...manualScenario, freight: v})} placeholder={financialData.realized.freight}/>
-                <DRESingleLine label="(=) Rec. Líquida" val={financialData.simulated.netRev} color="text-indigo-700"/>
-                <div className="pl-2 border-l-2 border-indigo-100 mt-2 opacity-70">
-                   <DRESingleLine label="(-) CMV (Estimado)" val={financialData.simulated.cmv} color="text-red-600"/>
-                   <DRESingleLine label="(-) Impostos (Calc)" val={financialData.simulated.taxes} color="text-red-500"/>
-                   <DRESingleLine label="(-) Comissões (Calc)" val={financialData.simulated.comm} color="text-red-500"/>
-                </div>
-                <div className="pl-2 border-l-2 border-indigo-100 mt-2">
-                   <DRESingleLine label="(-) Desp. Fixas" isInput={true} val={manualScenario.fixed} onChange={v => setManualScenario({...manualScenario, fixed: v})} placeholder={financialData.realized.fixedExp}/>
-                   <DRESingleLine label="(-) Desp. Variáveis" isInput={true} val={manualScenario.variable} onChange={v => setManualScenario({...manualScenario, variable: v})} placeholder={financialData.realized.varExp}/>
-                </div>
-                <div className="mt-4 p-3 bg-indigo-50 rounded border border-indigo-200 flex justify-between items-center">
-                 <span className="font-bold text-indigo-900">LUCRO PROJETADO</span>
-                 <span className={`font-extrabold text-lg ${financialData.simulated.profit >= 0 ? 'text-indigo-700' : 'text-red-600'}`}>{formatBRL(financialData.simulated.profit)}</span>
-               </div>
-              </div>
-           </div>
-
-         </div>
+      {/* 2. BARRA DE CONTROLE DO DRE */}
+      <div className="flex flex-col md:flex-row justify-between items-center bg-white p-4 rounded-xl border border-slate-200 shadow-sm relative z-10">
+        <div className="flex items-center gap-4 mb-2 md:mb-0">
+          <h3 className="font-bold text-slate-800 text-lg">Comparativo Financeiro</h3>
+          <select 
+            value={selectedMonth} 
+            onChange={e => setSelectedMonth(e.target.value)}
+            className="bg-slate-100 border-none rounded text-sm font-bold text-slate-700 cursor-pointer py-1 px-3 focus:ring-0"
+          >
+            {months.map(m => (
+              <option key={m.key} value={m.key}>{m.label}</option>
+            ))}
+          </select>
+        </div>
+        <button 
+          onClick={handleResetManual}
+          className="text-xs bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-lg font-bold border border-indigo-200 hover:bg-indigo-100 flex items-center gap-2"
+        >
+          <RefreshCw size={12} /> Resetar Simulação
+        </button>
       </div>
+
+      {/* 3. DRE COMPARATIVO (SPLIT VIEW) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        
+        {/* COLUNA ESQUERDA: REALIZADO */}
+        <div className="bg-slate-50 p-6 rounded-xl border border-slate-200 shadow-inner">
+          <h4 className="font-bold text-slate-500 uppercase text-xs mb-4 text-center border-b border-slate-200 pb-2">
+            Dados do Sistema (Realizado)
+          </h4>
+          <div className="space-y-3 text-sm">
+            <DreRow label="(+) Receita Bruta" value={sysGross} isBold />
+            <DreRow label="(-) Fretes" value={sysFreight} isRed isSmall />
+            
+            <div className="flex justify-between border-t border-slate-200 pt-1 font-semibold text-blue-700">
+              <span>(=) Receita Líquida</span>
+              <span>{formatBRL(sysNetRev)}</span>
+            </div>
+
+            <DreRowInput label="(-) Custo Mercadoria (CMV)" value={sysCMV} pct={sysNetRev ? sysCMV/sysNetRev*100 : 0} isRed />
+            
+            <div className="pl-2 border-l-2 border-slate-200 space-y-1 mt-2">
+              <DreRowInput label="(-) Impostos" value={sysTaxes} pct={rateTax} isSmall />
+              <DreRowInput label="(-) Comissões" value={sysComms} pct={rateComm} isSmall />
+              <DreRowInput label="(-) Inadimplência" value={sysBadDebt} pct={rateBad} isSmall />
+            </div>
+
+            <div className="flex justify-between font-bold text-orange-700 mt-2 bg-orange-50 p-1 rounded">
+              <span>(=) Margem Contribuição</span>
+              <div className="flex gap-2">
+                <span className="text-[10px] bg-orange-100 px-1 rounded self-center text-orange-800">
+                  {formatPct(sysNetRev ? sysMargin/sysNetRev*100 : 0)}
+                </span>
+                <span>{formatBRL(sysMargin)}</span>
+              </div>
+            </div>
+
+            <div className="pl-2 space-y-1 mt-1">
+              <DreRowInput label="(-) Despesas Fixas" value={sysFixedExp} pct={sysNetRev ? sysFixedExp/sysNetRev*100 : 0} isSmall />
+              <DreRowInput label="(-) Despesas Variáveis" value={sysVarExp} pct={sysNetRev ? sysVarExp/sysNetRev*100 : 0} isSmall />
+            </div>
+
+            <div className="flex justify-between p-3 bg-white rounded-lg border-2 border-green-100 mt-4 shadow-sm">
+              <span className="font-extrabold text-green-800">LUCRO LÍQUIDO</span>
+              <div className="flex flex-col items-end">
+                <span className={`font-extrabold text-lg ${sysProfit >= 0 ? 'text-green-800' : 'text-red-600'}`}>
+                  {formatBRL(sysProfit)}
+                </span>
+                <span className="text-[10px] font-bold text-green-600">{formatPct(sysProfitPct)}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* COLUNA DIREITA: SIMULADO (MANUAL) */}
+        <div className="bg-white p-6 rounded-xl border-2 border-indigo-100 shadow-sm relative">
+          <div className="absolute top-0 right-0 bg-indigo-100 text-indigo-700 text-[10px] font-bold px-2 py-1 rounded-bl-lg">
+            EDITÁVEL
+          </div>
+          <h4 className="font-bold text-indigo-600 uppercase text-xs mb-4 text-center border-b border-indigo-100 pb-2">
+            Análise Manual (Simulação)
+          </h4>
+          
+          <div className="space-y-3 text-sm">
+            <DreInput 
+              label="(+) Receita Bruta" 
+              val={manGross} 
+              onChange={v => handleManualUpdate('gross_revenue', v)} 
+              isBold 
+            />
+             <DreInput 
+              label="(-) Fretes" 
+              val={manFreight} 
+              onChange={v => handleManualUpdate('freight', v)} 
+              isRed 
+              isSmall 
+            />
+
+            <div className="flex justify-between border-t border-indigo-50 pt-1 font-semibold text-indigo-700 bg-indigo-50 px-1 rounded">
+              <span>(=) Receita Líquida</span>
+              <span>{formatBRL(manNetRev)}</span>
+            </div>
+
+            <DreInput 
+              label="(-) CMV (Custo)" 
+              val={manCMV} 
+              onChange={v => handleManualUpdate('cmv', v)} 
+              isRed
+            />
+
+            <div className="pl-2 border-l-2 border-indigo-100 space-y-2 mt-2">
+               <DreInputRate 
+                 label="Impostos" 
+                 val={manRateTax} 
+                 onChange={v => handleManualUpdate('tax_rate', v)}
+                 displayVal={manTaxes}
+               />
+               <DreInputRate 
+                 label="Comissões" 
+                 val={manRateComm} 
+                 onChange={v => handleManualUpdate('comm_rate', v)}
+                 displayVal={manComms}
+               />
+               <div className="flex justify-between items-center text-xs opacity-70" title="Inadimplência segue a taxa global">
+                  <span className="text-slate-500">Inadimplência ({rateBad}%)</span>
+                  <span className="text-red-500">{formatBRL(manBadDebt)}</span>
+               </div>
+            </div>
+
+            <div className="flex justify-between font-bold text-orange-700 mt-2 px-1">
+              <span>(=) Margem Contrib.</span>
+              <div className="flex gap-2">
+                <span className="text-[10px] bg-orange-100 px-1 rounded self-center">
+                  {formatPct(manNetRev ? manMargin/manNetRev*100 : 0)}
+                </span>
+                <span>{formatBRL(manMargin)}</span>
+              </div>
+            </div>
+
+            <div className="pl-2 space-y-2 mt-2">
+              <DreInput 
+                label="(-) Desp. Fixas" 
+                val={manFixedExp} 
+                onChange={v => handleManualUpdate('fixed_expenses', v)} 
+                isSmall 
+              />
+              <DreInput 
+                label="(-) Desp. Variáveis" 
+                val={manVarExp} 
+                onChange={v => handleManualUpdate('variable_expenses', v)} 
+                isSmall 
+              />
+            </div>
+
+            <div className="flex justify-between p-3 bg-indigo-50 rounded-lg border-2 border-indigo-200 mt-4 shadow-sm">
+              <span className="font-extrabold text-indigo-900">LUCRO PROJETADO</span>
+              <div className="flex flex-col items-end">
+                <span className={`font-extrabold text-lg ${manProfit >= 0 ? 'text-indigo-900' : 'text-red-600'}`}>
+                  {formatBRL(manProfit)}
+                </span>
+                <span className="text-[10px] font-bold text-indigo-600">{formatPct(manProfitPct)}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 4. GRÁFICO COMPARATIVO */}
+      <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
+        <h3 className="font-bold text-slate-700 mb-4 text-sm">Visualização Comparativa</h3>
+        <div className="relative h-64">
+          <Bar 
+            data={chartData} 
+            options={{ 
+              responsive: true, 
+              maintainAspectRatio: false,
+              plugins: { legend: { display: false } },
+              scales: { y: { beginAtZero: true, grid: { color: '#f1f5f9' } } }
+            }} 
+          />
+        </div>
+        <div className="flex justify-center gap-6 mt-4 text-xs font-bold">
+          <span className="flex items-center gap-1">
+            <div className="w-3 h-3 bg-slate-400 rounded-full"></div> Realizado
+          </span>
+          <span className="flex items-center gap-1">
+            <div className="w-3 h-3 bg-indigo-500 rounded-full"></div> Simulado
+          </span>
+        </div>
+      </div>
+
+    </div>
+  );
+}
+
+// --- SUB-COMPONENTES PARA O UI FICAR LIMPO ---
+
+function DreRow({ label, value, isBold, isRed, isSmall }) {
+  const formatBRL = (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
+  return (
+    <div className={`flex justify-between items-center ${isSmall ? 'text-xs text-slate-500' : ''}`}>
+      <span className={isBold ? 'text-slate-600 font-medium' : ''}>{label}</span>
+      <span className={`font-bold ${isRed ? 'text-red-400' : 'text-slate-800'}`}>
+        {formatBRL(value)}
+      </span>
+    </div>
+  );
+}
+
+function DreRowInput({ label, value, pct, isRed, isSmall }) {
+  const formatBRL = (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
+  return (
+    <div className={`flex justify-between items-center ${isSmall ? 'text-xs text-slate-500' : ''} ${isRed ? 'bg-red-50 p-1 rounded border border-red-100' : ''}`}>
+      <span>{label}</span>
+      <div className="flex gap-2">
+        <span className={`text-[10px] px-1 rounded self-center ${isRed ? 'bg-red-100 text-red-700' : 'bg-slate-100'}`}>
+          {pct.toFixed(1)}%
+        </span>
+        <span className={isRed ? 'text-red-700 font-bold' : 'text-red-500'}>
+          {formatBRL(value)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function DreInput({ label, val, onChange, isBold, isRed, isSmall }) {
+  return (
+    <div className={`flex justify-between items-center ${isSmall ? 'text-xs' : ''} ${isRed ? 'bg-red-50 p-1 rounded border border-red-100' : ''}`}>
+      <span className={`${isBold ? 'text-slate-600 font-medium' : 'text-slate-500'} ${isRed ? 'text-red-700 font-bold' : ''}`}>
+        {label}
+      </span>
+      <input 
+        type="number"
+        value={val || 0}
+        onChange={e => onChange(e.target.value)}
+        className={`input-clean text-right bg-transparent border-b border-slate-300 w-24 focus:ring-0 focus:border-indigo-500 
+          ${isRed ? 'text-red-700 font-bold' : 'text-indigo-900 font-bold'} ${isSmall ? 'text-xs' : ''}`}
+      />
+    </div>
+  );
+}
+
+function DreInputRate({ label, val, onChange, displayVal }) {
+  const formatBRL = (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
+  return (
+    <div className="flex justify-between items-center text-xs">
+      <span className="text-slate-500">
+        {label} (
+        <input 
+          type="number" 
+          value={val} 
+          onChange={e => onChange(e.target.value)}
+          className="w-8 text-center border-b border-slate-300 text-[10px] bg-transparent focus:outline-none focus:border-indigo-500"
+        />
+        %)
+      </span>
+      <span className="text-red-500">{formatBRL(displayVal)}</span>
     </div>
   );
 }

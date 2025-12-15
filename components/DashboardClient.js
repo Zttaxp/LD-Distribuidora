@@ -24,7 +24,9 @@ import SellersTab from '@/components/tabs/SellersTab';
 export default function DashboardClient({ 
   initialSummary, 
   initialTopMaterials, 
-  initialSellers 
+  initialSellers,
+  initialSettings, // Novo: Configurações do Banco
+  initialExpenses  // Novo: Despesas do Banco
 }) {
   const router = useRouter();
   const supabase = createBrowserClient(
@@ -40,20 +42,24 @@ export default function DashboardClient({
   const summaryData = initialSummary || [];
   const topMaterials = initialTopMaterials || [];
   const sellersData = initialSellers || [];
+  
+  // Estado local para Settings e Expenses (para permitir atualização sem F5)
+  const [settings, setSettings] = useState(initialSettings || { tax_rate: 6, comm_rate: 3, bad_debt_rate: 0 });
+  const [expenses, setExpenses] = useState(initialExpenses || []);
 
   const fileInputRef = useRef(null);
 
-  // --- LÓGICA DE UPLOAD COM DEBUG DETALHADO ---
+  // --- LÓGICA DE UPLOAD CORRIGIDA (IGUAL AO HTML) ---
   const handleFileUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     setIsUploading(true);
     try {
-      console.log("--- INICIANDO UPLOAD DE DEBUG ---");
+      console.log("--- INICIANDO UPLOAD ---");
       console.log("1. Arquivo selecionado:", file.name, `(${file.size} bytes)`);
 
-      // 1. Salvar arquivo no Storage
+      // 1. Salvar arquivo no Storage (Backup)
       const fileName = `${Date.now()}_${file.name}`;
       const { error: uploadError } = await supabase.storage
         .from('uploads')
@@ -61,9 +67,10 @@ export default function DashboardClient({
 
       if (uploadError) {
         console.error("ERRO NO STORAGE:", uploadError);
-        throw new Error(`Falha ao salvar arquivo no bucket: ${uploadError.message}`);
+        // Não paramos o fluxo se o storage falhar, priorizamos o banco de dados
+      } else {
+        console.log("2. Upload no Storage concluído.");
       }
-      console.log("2. Upload no Storage concluído.");
 
       // 2. Criar registro do dataset
       const { data: datasetData, error: datasetError } = await supabase
@@ -72,11 +79,8 @@ export default function DashboardClient({
         .select()
         .single();
 
-      if (datasetError) {
-        console.error("ERRO AO CRIAR DATASET:", datasetError);
-        throw new Error(`Falha ao registrar dataset: ${datasetError.message}`);
-      }
-      console.log("3. Dataset registrado no banco. ID:", datasetData.id);
+      if (datasetError) throw new Error(`Falha ao registrar dataset: ${datasetError.message}`);
+      console.log("3. Dataset registrado. ID:", datasetData.id);
 
       // 3. Ler e Parsear Excel
       const buffer = await file.arrayBuffer();
@@ -84,25 +88,26 @@ export default function DashboardClient({
       const sheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[sheetName];
       
-      // Usa defval para garantir que colunas vazias venham como string vazia, igual ao HTML
-const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
-      console.log(`4. Leitura do Excel concluída. Linhas encontradas: ${jsonData.length}`);
+      // CORREÇÃO CRÍTICA: Ler como objetos com valores padrão, igual ao HTML original
+      // Isso permite que o parser busque colunas pelo nome ("Vendedor", "VendedorNome", etc)
+      const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+      
+      console.log(`4. Leitura do Excel concluída. Linhas brutas: ${jsonData.length}`);
 
-      if (jsonData.length < 2) {
-        throw new Error("O arquivo Excel parece estar vazio ou tem apenas o cabeçalho.");
+      if (jsonData.length === 0) {
+        throw new Error("A planilha parece estar vazia.");
       }
 
-      // Processa os dados usando o Parser corrigido
+      // Processa os dados usando o novo Parser (que replica a lógica do HTML)
       const parsedSales = parseExcelData(jsonData, datasetData.id);
       console.log(`5. Parser concluído. Linhas válidas para inserção: ${parsedSales.length}`);
 
       if (parsedSales.length === 0) {
-        console.warn("AVISO: O parser retornou 0 linhas. Verifique se as colunas da planilha batem com a lógica do parser.");
-        throw new Error("Nenhuma venda válida foi encontrada na planilha. Verifique o formato.");
+        throw new Error("Nenhuma venda válida encontrada. Verifique os nomes das colunas da planilha.");
       }
 
-      // 4. Inserir vendas em lotes (Chunks) para evitar timeout
-      console.log("6. Iniciando inserção no banco de dados...");
+      // 4. Inserir vendas em lotes (Chunks)
+      console.log("6. Iniciando inserção no banco...");
       const chunkSize = 1000;
       let insertedCount = 0;
 
@@ -112,24 +117,18 @@ const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
         
         if (insertError) {
           console.error(`ERRO NO INSERT (Lote ${i}):`, insertError);
-          // Se for erro de RLS, vai aparecer aqui explicitamente
-          if (insertError.code === '42501') {
-            throw new Error("Erro de Permissão (RLS): Seu usuário não tem permissão para inserir vendas.");
-          }
           throw insertError;
         }
         insertedCount += chunk.length;
-        console.log(`   - Lote inserido: ${insertedCount} / ${parsedSales.length}`);
       }
 
-      console.log("7. SUCESSO TOTAL! Todas as linhas inseridas.");
-      alert(`Sucesso! ${insertedCount} vendas foram importadas.`);
+      console.log("7. SUCESSO TOTAL!");
+      alert(`Sucesso! ${insertedCount} vendas importadas.`);
       
-      // Atualiza a página para mostrar os dados novos
       router.refresh(); 
 
     } catch (error) {
-      console.error('--- ERRO FATAL NO PROCESSO ---', error);
+      console.error('--- ERRO FATAL ---', error);
       alert(`Erro no processo: ${error.message}`);
     } finally {
       setIsUploading(false);
@@ -148,9 +147,18 @@ const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
       case 'overview':
         return <OverviewTab summary={summaryData} topMaterials={topMaterials} />;
       case 'financial':
-        return <FinancialTab summary={summaryData} />;
+        return (
+          <FinancialTab 
+            summary={summaryData} 
+            settings={settings}
+            expenses={expenses}
+            // Passamos as funções para atualizar o estado quando o usuário salvar algo
+            onSettingsChange={setSettings}
+            onExpensesChange={setExpenses}
+          />
+        );
       case 'annual':
-        return <AnnualTab summary={summaryData} />;
+        return <AnnualTab summary={summaryData} settings={settings} expenses={expenses} />;
       case 'sellers':
         return <SellersTab sellers={sellersData} />;
       default:
@@ -159,15 +167,18 @@ const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
   };
 
   return (
-    <div className="flex h-screen bg-gray-50">
+    <div className="flex h-screen bg-slate-50">
       {/* Sidebar Desktop */}
-      <aside className="w-64 bg-white border-r border-gray-200 hidden md:flex flex-col">
-        <div className="p-6 border-b border-gray-100">
-          <h1 className="text-xl font-bold text-gray-800">Marmoraria BI</h1>
-          <p className="text-xs text-gray-500 mt-1">Gestão Inteligente</p>
+      <aside className="w-64 bg-white border-r border-slate-200 hidden md:flex flex-col shadow-sm z-10">
+        <div className="p-6 border-b border-slate-100 flex items-center gap-2">
+          <div className="bg-cyan-600 text-white p-1.5 rounded-lg font-bold shadow-sm">BI</div>
+          <div>
+            <h1 className="text-lg font-bold text-slate-800 leading-tight">Marmoraria</h1>
+            <p className="text-xs text-slate-500">Gestão Integrada</p>
+          </div>
         </div>
 
-        <nav className="flex-1 p-4 space-y-2">
+        <nav className="flex-1 p-4 space-y-1">
           <SidebarItem 
             icon={<LayoutDashboard size={20} />} 
             label="Visão Geral" 
@@ -176,7 +187,7 @@ const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
           />
           <SidebarItem 
             icon={<DollarSign size={20} />} 
-            label="Financeiro (DRE)" 
+            label="Simulador Financeiro" 
             active={activeTab === 'financial'} 
             onClick={() => setActiveTab('financial')} 
           />
@@ -194,7 +205,7 @@ const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
           />
         </nav>
 
-        <div className="p-4 border-t border-gray-100 space-y-2">
+        <div className="p-4 border-t border-slate-100 space-y-3">
           {/* Botão Upload */}
           <div className="relative">
             <input
@@ -208,36 +219,39 @@ const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={isUploading}
-              className={`w-full flex items-center justify-center gap-2 p-3 rounded-lg text-sm font-medium transition-colors
+              className={`w-full flex items-center justify-center gap-2 p-3 rounded-lg text-sm font-bold transition-all shadow-sm
                 ${isUploading 
-                  ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
-                  : 'bg-blue-600 text-white hover:bg-blue-700'
+                  ? 'bg-slate-100 text-slate-400 cursor-not-allowed' 
+                  : 'bg-cyan-600 text-white hover:bg-cyan-700 hover:shadow-md'
                 }`}
             >
               {isUploading ? <Loader2 className="animate-spin" size={18} /> : <Upload size={18} />}
-              {isUploading ? 'Processando...' : 'Importar Excel'}
+              {isUploading ? 'Processando...' : 'Carregar Planilha'}
             </button>
           </div>
 
           <button 
             onClick={handleLogout}
-            className="w-full flex items-center justify-center gap-2 p-3 text-sm text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+            className="w-full flex items-center justify-center gap-2 p-2 text-sm text-red-500 hover:bg-red-50 rounded-lg transition-colors font-medium"
           >
-            <LogOut size={18} />
+            <LogOut size={16} />
             Sair
           </button>
         </div>
       </aside>
 
       {/* Conteúdo Principal */}
-      <main className="flex-1 overflow-y-auto">
+      <main className="flex-1 overflow-y-auto custom-scroll">
         {/* Header Mobile */}
-        <header className="bg-white border-b border-gray-200 p-6 flex justify-between items-center md:hidden">
-          <h1 className="font-bold text-gray-800">Marmoraria BI</h1>
-          <button onClick={handleLogout} className="text-sm text-red-600">Sair</button>
+        <header className="bg-white border-b border-slate-200 p-4 flex justify-between items-center md:hidden sticky top-0 z-20">
+          <div className="flex items-center gap-2">
+            <div className="bg-cyan-600 text-white p-1 rounded font-bold text-xs">BI</div>
+            <h1 className="font-bold text-slate-800">Marmoraria</h1>
+          </div>
+          <button onClick={handleLogout} className="text-xs text-red-600 font-bold">Sair</button>
         </header>
         
-        <div className="p-6 md:p-10 max-w-7xl mx-auto">
+        <div className="p-4 md:p-8 max-w-7xl mx-auto">
           {renderContent()}
         </div>
       </main>
@@ -245,17 +259,19 @@ const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
   );
 }
 
+// Componente auxiliar de item de menu (igual ao HTML visualmente)
 function SidebarItem({ icon, label, active, onClick }) {
   return (
     <button
       onClick={onClick}
-      className={`w-full flex items-center gap-3 p-3 rounded-lg text-sm font-medium transition-all
+      className={`w-full flex items-center gap-3 p-3 rounded-lg text-sm font-medium transition-all duration-200
         ${active 
-          ? 'bg-blue-50 text-blue-700 shadow-sm' 
-          : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+          ? 'bg-cyan-50 text-cyan-700 border-r-4 border-cyan-600 font-bold' 
+          : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
         }`}
     >
-      {icon}
+      {/* Ícone com cor dinâmica */}
+      <span className={active ? 'text-cyan-600' : 'text-slate-400'}>{icon}</span>
       {label}
     </button>
   );
