@@ -43,3 +43,46 @@
   .print-break-inside-avoid { break-inside: avoid; }
   @page { size: landscape; margin: 1cm; }
 }
+
+/* ESTILOS DE IMPRESSÃO (IGUAL AO HTML ORIGINAL) */
+@media print {
+  /* Esconde elementos de navegação e botões */
+  aside, 
+  header, 
+  button, 
+  .no-print,
+  input[type="file"] {
+    display: none !important;
+  }
+
+  /* Ajusta o corpo para ocupar a folha toda */
+  body, main, div {
+    background: white !important;
+    color: black !important;
+    height: auto !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  /* Garante que o conteúdo principal use 100% da largura */
+  main {
+    width: 100vw !important;
+    max-width: 100% !important;
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+  }
+
+  /* Configuração da página */
+  @page {
+    size: landscape; /* Força modo paisagem igual ao HTML */
+    margin: 1cm;
+  }
+
+  /* Garante que gráficos e cores de fundo apareçam na impressão */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+}

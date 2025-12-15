@@ -1,8 +1,8 @@
 import "../styles/globals.css"; 
 
 export const metadata = {
-  title: "Bi App",
-  description: "Sistema de BI para planilhas",
+  title: "LD - Gestão",
+  description: "Sistema de Business Intelligence e Gestão Financeira para Marmorarias",
 };
 
 export default function RootLayout({ children }) {
