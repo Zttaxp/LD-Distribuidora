@@ -7,71 +7,100 @@ import { revalidatePath } from 'next/cache';
 export async function updateSettings(settings) {
   const supabase = await createClient();
   
-  const { error } = await supabase
-    .from('app_settings')
-    .update({
-      tax_rate: Number(settings.tax_rate),
-      comm_rate: Number(settings.comm_rate),
-      bad_debt_rate: Number(settings.bad_debt_rate),
-      updated_at: new Date()
-    })
-    .eq('id', settings.id || 1);
+  try {
+    const { error } = await supabase
+      .from('app_settings')
+      .update({
+        tax_rate: Number(settings.tax_rate),
+        comm_rate: Number(settings.comm_rate),
+        bad_debt_rate: Number(settings.bad_debt_rate),
+        updated_at: new Date()
+      })
+      .eq('id', settings.id || 1);
 
-  if (error) throw new Error('Erro ao atualizar configurações: ' + error.message);
-  
-  revalidatePath('/');
-  return { success: true };
+    if (error) throw new Error(error.message);
+    revalidatePath('/');
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: `Erro ao salvar configurações: ${err.message}` };
+  }
 }
 
-// --- DESPESAS (CORREÇÃO DE ERRO DE INSERT) ---
+// --- DESPESAS (BLINDADO CONTRA ERRO DE RENDER) ---
 export async function addExpense(expense) {
-  const supabase = await createClient();
-  
-  // Limpeza robusta do valor (previne erro de texto/vírgula)
-  let cleanValue = 0;
-  if (typeof expense.value === 'string') {
-    cleanValue = parseFloat(expense.value.replace(',', '.'));
-  } else {
-    cleanValue = Number(expense.value);
+  try {
+    const supabase = await createClient();
+    
+    // 1. Limpeza robusta do valor (previne erro de texto/vírgula)
+    let cleanValue = 0;
+    const rawValue = expense.value;
+
+    if (typeof rawValue === 'number') {
+      cleanValue = rawValue;
+    } else if (typeof rawValue === 'string') {
+      // Troca vírgula por ponto e remove espaços
+      cleanValue = parseFloat(rawValue.replace(/\./g, '').replace(',', '.'));
+    }
+
+    // Se a conversão falhou (ex: digitou texto), retorna erro controlado
+    if (isNaN(cleanValue)) {
+      return { success: false, message: "O valor informado não é um número válido." };
+    }
+
+    // 2. Tenta inserir no banco
+    const { data, error } = await supabase
+      .from('expenses')
+      .insert([{
+        name: expense.name,
+        value: cleanValue,
+        type: expense.type,
+        month_key: expense.type === 'VARIABLE' ? expense.month_key : null
+      }])
+      .select()
+      .single();
+
+    if (error) {
+      console.error("Erro Supabase:", error);
+      return { success: false, message: "Erro no banco de dados: " + error.message };
+    }
+    
+    // 3. Atualiza a tela
+    revalidatePath('/');
+    return { success: true, data };
+
+  } catch (err) {
+    console.error("Erro Fatal (Server Action):", err);
+    // Retorna um erro amigável em vez de quebrar a tela preta
+    return { success: false, message: "Erro interno ao processar a despesa." };
   }
-
-  if (isNaN(cleanValue)) cleanValue = 0;
-
-  const { data, error } = await supabase
-    .from('expenses')
-    .insert([{
-      name: expense.name,
-      value: cleanValue, // Envia número limpo
-      type: expense.type,
-      month_key: expense.type === 'VARIABLE' ? expense.month_key : null
-    }])
-    .select()
-    .single();
-
-  if (error) throw new Error('Erro ao adicionar despesa: ' + error.message);
-  
-  revalidatePath('/');
-  return { success: true, data };
 }
 
 export async function deleteExpense(id) {
-  const supabase = await createClient();
-  const { error } = await supabase.from('expenses').delete().eq('id', id);
-  if (error) throw new Error('Erro ao apagar despesa');
-  revalidatePath('/');
-  return { success: true };
+  try {
+    const supabase = await createClient();
+    const { error } = await supabase.from('expenses').delete().eq('id', id);
+    if (error) throw error;
+    revalidatePath('/');
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: "Erro ao apagar despesa." };
+  }
 }
 
 // --- CENÁRIOS MANUAIS ---
 export async function saveManualScenario(data) {
   const supabase = await createClient();
-  const { error } = await supabase
-    .from('manual_scenarios')
-    .upsert(data, { onConflict: 'month_key' });
+  try {
+    const { error } = await supabase
+      .from('manual_scenarios')
+      .upsert(data, { onConflict: 'month_key' });
 
-  if (error) throw new Error('Erro ao salvar cenário: ' + error.message);
-  revalidatePath('/');
-  return { success: true };
+    if (error) throw error;
+    revalidatePath('/');
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: "Erro ao salvar cenário." };
+  }
 }
 
 export async function getManualScenario(monthKey) {
@@ -87,26 +116,30 @@ export async function getManualScenario(monthKey) {
 // --- VENDEDORES & METAS ---
 export async function saveSellerGoal(sellerName, monthKey, value) {
   const supabase = await createClient();
-  const cleanValue = typeof value === 'string' ? parseFloat(value.replace(',', '.')) : value;
+  try {
+    let cleanValue = value;
+    if (typeof value === 'string') cleanValue = parseFloat(value.replace(',', '.'));
+    
+    const { error } = await supabase
+      .from('seller_goals')
+      .upsert({ 
+        seller_name: sellerName, 
+        month_key: monthKey, 
+        goal_value: cleanValue 
+      }, { onConflict: 'seller_name, month_key' });
 
-  const { error } = await supabase
-    .from('seller_goals')
-    .upsert({ 
-      seller_name: sellerName, 
-      month_key: monthKey, 
-      goal_value: cleanValue 
-    }, { onConflict: 'seller_name, month_key' });
-
-  if (error) throw new Error('Erro ao salvar meta: ' + error.message);
-  revalidatePath('/');
-  return { success: true };
+    if (error) throw error;
+    revalidatePath('/');
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: "Erro ao salvar meta." };
+  }
 }
 
 export async function getSellerDetails(seller, month, year) {
   const supabase = await createClient();
   const monthKey = `${year}-${month}`;
 
-  // 1. Busca vendas
   const { data: sales, error } = await supabase
     .from('sales')
     .select('*')
@@ -116,7 +149,6 @@ export async function getSellerDetails(seller, month, year) {
 
   if (error) throw new Error('Erro ao buscar vendas: ' + error.message);
 
-  // 2. Busca meta
   const { data: goalData } = await supabase
     .from('seller_goals')
     .select('goal_value')
