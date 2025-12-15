@@ -8,13 +8,20 @@ export const dynamic = 'force-dynamic';
 async function loadDashboardData() {
   const supabase = await createClient();
 
-  // Buscamos tudo em paralelo para ser rápido
-  const [summaryResult, materialsResult, sellersResult, settingsResult, expensesResult] = await Promise.all([
+  const [
+    summaryResult, 
+    materialsResult, 
+    sellersResult, 
+    settingsResult, 
+    expensesResult,
+    scenariosResult // <--- NOVO: Buscando cenários manuais
+  ] = await Promise.all([
     supabase.from('monthly_sales_summary').select('*'),
-    supabase.from('top_materials_summary').select('*'), // Removi o limit para permitir filtragem no front se precisar
+    supabase.from('top_materials_summary').select('*'),
     supabase.from('sellers_summary').select('*'),
-    supabase.from('app_settings').select('*').single(), // Pega a configuração única
-    supabase.from('expenses').select('*') // Pega todas as despesas
+    supabase.from('app_settings').select('*').single(),
+    supabase.from('expenses').select('*'),
+    supabase.from('manual_scenarios').select('*') // <--- NOVO
   ]);
 
   return {
@@ -22,7 +29,8 @@ async function loadDashboardData() {
     topMaterials: materialsResult.data || [],
     sellersSummary: sellersResult.data || [],
     appSettings: settingsResult.data || { tax_rate: 6, comm_rate: 3, bad_debt_rate: 0 },
-    expenses: expensesResult.data || []
+    expenses: expensesResult.data || [],
+    manualScenarios: scenariosResult.data || [] // <--- NOVO
   };
 }
 
@@ -38,6 +46,7 @@ export default async function Page() {
           initialSellers={data.sellersSummary}
           initialSettings={data.appSettings}
           initialExpenses={data.expenses}
+          initialScenarios={data.manualScenarios} // <--- Passando para o cliente
         />
       </Suspense>
     </main>

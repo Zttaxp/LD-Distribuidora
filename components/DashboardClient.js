@@ -25,8 +25,9 @@ export default function DashboardClient({
   initialSummary, 
   initialTopMaterials, 
   initialSellers,
-  initialSettings, // Novo: Configurações do Banco
-  initialExpenses  // Novo: Despesas do Banco
+  initialSettings,
+  initialExpenses,
+  initialScenarios // <--- NOVO: Recebe os cenários manuais do banco
 }) {
   const router = useRouter();
   const supabase = createBrowserClient(
@@ -34,22 +35,25 @@ export default function DashboardClient({
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
   );
 
-  // Estados
+  // Estados de Navegação e UI
   const [activeTab, setActiveTab] = useState('overview');
   const [isUploading, setIsUploading] = useState(false);
   
-  // Dados vindos do Servidor
+  // Dados vindos do Servidor (Server Components)
   const summaryData = initialSummary || [];
   const topMaterials = initialTopMaterials || [];
   const sellersData = initialSellers || [];
   
-  // Estado local para Settings e Expenses (para permitir atualização sem F5)
+  // Dados que podem ser atualizados localmente (Financeiro)
   const [settings, setSettings] = useState(initialSettings || { tax_rate: 6, comm_rate: 3, bad_debt_rate: 0 });
   const [expenses, setExpenses] = useState(initialExpenses || []);
+  
+  // Cenários para o Relatório Anual (Somente Leitura aqui, edição é na aba Financeiro)
+  const manualScenarios = initialScenarios || []; 
 
   const fileInputRef = useRef(null);
 
-  // --- LÓGICA DE UPLOAD CORRIGIDA (IGUAL AO HTML) ---
+  // --- LÓGICA DE UPLOAD (MANTIDA IGUAL AO HTML ORIGINAL) ---
   const handleFileUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -66,8 +70,7 @@ export default function DashboardClient({
         .upload(fileName, file);
 
       if (uploadError) {
-        console.error("ERRO NO STORAGE:", uploadError);
-        // Não paramos o fluxo se o storage falhar, priorizamos o banco de dados
+        console.warn("Aviso: Upload para Storage falhou, mas seguindo com banco de dados.", uploadError);
       } else {
         console.log("2. Upload no Storage concluído.");
       }
@@ -88,8 +91,7 @@ export default function DashboardClient({
       const sheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[sheetName];
       
-      // CORREÇÃO CRÍTICA: Ler como objetos com valores padrão, igual ao HTML original
-      // Isso permite que o parser busque colunas pelo nome ("Vendedor", "VendedorNome", etc)
+      // IMPORTANTE: { defval: "" } garante compatibilidade com a lógica do HTML original
       const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
       
       console.log(`4. Leitura do Excel concluída. Linhas brutas: ${jsonData.length}`);
@@ -98,12 +100,12 @@ export default function DashboardClient({
         throw new Error("A planilha parece estar vazia.");
       }
 
-      // Processa os dados usando o novo Parser (que replica a lógica do HTML)
+      // Processa os dados
       const parsedSales = parseExcelData(jsonData, datasetData.id);
       console.log(`5. Parser concluído. Linhas válidas para inserção: ${parsedSales.length}`);
 
       if (parsedSales.length === 0) {
-        throw new Error("Nenhuma venda válida encontrada. Verifique os nomes das colunas da planilha.");
+        throw new Error("Nenhuma venda válida encontrada. Verifique se as colunas da planilha correspondem ao padrão.");
       }
 
       // 4. Inserir vendas em lotes (Chunks)
@@ -146,21 +148,33 @@ export default function DashboardClient({
     switch (activeTab) {
       case 'overview':
         return <OverviewTab summary={summaryData} topMaterials={topMaterials} />;
+      
       case 'financial':
         return (
           <FinancialTab 
             summary={summaryData} 
             settings={settings}
             expenses={expenses}
-            // Passamos as funções para atualizar o estado quando o usuário salvar algo
+            // Funções para atualizar o estado local instantaneamente ao salvar
             onSettingsChange={setSettings}
             onExpensesChange={setExpenses}
           />
         );
+      
       case 'annual':
-        return <AnnualTab summary={summaryData} settings={settings} expenses={expenses} />;
+        // AQUI ESTÁ A CORREÇÃO: Passamos os cenários manuais para a aba Anual
+        return (
+          <AnnualTab 
+            summary={summaryData} 
+            settings={settings} 
+            expenses={expenses} 
+            scenarios={manualScenarios} 
+          />
+        );
+      
       case 'sellers':
         return <SellersTab sellers={sellersData} />;
+      
       default:
         return <OverviewTab summary={summaryData} topMaterials={topMaterials} />;
     }
@@ -259,7 +273,6 @@ export default function DashboardClient({
   );
 }
 
-// Componente auxiliar de item de menu (igual ao HTML visualmente)
 function SidebarItem({ icon, label, active, onClick }) {
   return (
     <button
@@ -270,7 +283,6 @@ function SidebarItem({ icon, label, active, onClick }) {
           : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
         }`}
     >
-      {/* Ícone com cor dinâmica */}
       <span className={active ? 'text-cyan-600' : 'text-slate-400'}>{icon}</span>
       {label}
     </button>
