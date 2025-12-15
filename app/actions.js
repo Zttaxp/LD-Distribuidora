@@ -3,37 +3,47 @@
 import { createClient } from '@/utils/supabase/server';
 import { revalidatePath } from 'next/cache';
 
-// --- CONFIGURAÇÕES GERAIS (Taxas) ---
+// --- CONFIGURAÇÕES GERAIS ---
 export async function updateSettings(settings) {
   const supabase = await createClient();
   
   const { error } = await supabase
     .from('app_settings')
     .update({
-      tax_rate: settings.tax_rate,
-      comm_rate: settings.comm_rate,
-      bad_debt_rate: settings.bad_debt_rate,
+      tax_rate: Number(settings.tax_rate),
+      comm_rate: Number(settings.comm_rate),
+      bad_debt_rate: Number(settings.bad_debt_rate),
       updated_at: new Date()
     })
-    .eq('id', settings.id || 1); // Assume ID 1 como padrão
+    .eq('id', settings.id || 1);
 
   if (error) throw new Error('Erro ao atualizar configurações: ' + error.message);
   
-  revalidatePath('/'); // Atualiza o cache da página principal
+  revalidatePath('/');
   return { success: true };
 }
 
-// --- DESPESAS ---
+// --- DESPESAS (CORREÇÃO DE ERRO DE INSERT) ---
 export async function addExpense(expense) {
   const supabase = await createClient();
   
+  // Limpeza robusta do valor (previne erro de texto/vírgula)
+  let cleanValue = 0;
+  if (typeof expense.value === 'string') {
+    cleanValue = parseFloat(expense.value.replace(',', '.'));
+  } else {
+    cleanValue = Number(expense.value);
+  }
+
+  if (isNaN(cleanValue)) cleanValue = 0;
+
   const { data, error } = await supabase
     .from('expenses')
     .insert([{
       name: expense.name,
-      value: expense.value,
+      value: cleanValue, // Envia número limpo
       type: expense.type,
-      month_key: expense.month_key
+      month_key: expense.type === 'VARIABLE' ? expense.month_key : null
     }])
     .select()
     .single();
@@ -46,29 +56,20 @@ export async function addExpense(expense) {
 
 export async function deleteExpense(id) {
   const supabase = await createClient();
-  
-  const { error } = await supabase
-    .from('expenses')
-    .delete()
-    .eq('id', id);
-
+  const { error } = await supabase.from('expenses').delete().eq('id', id);
   if (error) throw new Error('Erro ao apagar despesa');
-  
   revalidatePath('/');
   return { success: true };
 }
 
-// --- CENÁRIOS MANUAIS (SIMULADOR) ---
+// --- CENÁRIOS MANUAIS ---
 export async function saveManualScenario(data) {
   const supabase = await createClient();
-  
-  // Upsert: Atualiza se existir, Cria se não existir (baseado no month_key)
   const { error } = await supabase
     .from('manual_scenarios')
     .upsert(data, { onConflict: 'month_key' });
 
   if (error) throw new Error('Erro ao salvar cenário: ' + error.message);
-  
   revalidatePath('/');
   return { success: true };
 }
@@ -80,21 +81,20 @@ export async function getManualScenario(monthKey) {
     .select('*')
     .eq('month_key', monthKey)
     .single();
-    
   return data || null;
 }
 
 // --- VENDEDORES & METAS ---
-
 export async function saveSellerGoal(sellerName, monthKey, value) {
   const supabase = await createClient();
-  
+  const cleanValue = typeof value === 'string' ? parseFloat(value.replace(',', '.')) : value;
+
   const { error } = await supabase
     .from('seller_goals')
     .upsert({ 
       seller_name: sellerName, 
       month_key: monthKey, 
-      goal_value: value 
+      goal_value: cleanValue 
     }, { onConflict: 'seller_name, month_key' });
 
   if (error) throw new Error('Erro ao salvar meta: ' + error.message);
@@ -104,9 +104,9 @@ export async function saveSellerGoal(sellerName, monthKey, value) {
 
 export async function getSellerDetails(seller, month, year) {
   const supabase = await createClient();
-  const monthKey = `${year}-${month}`; // Formato: 2025-1
+  const monthKey = `${year}-${month}`;
 
-  // 1. Busca as vendas detalhadas desse vendedor no mês
+  // 1. Busca vendas
   const { data: sales, error } = await supabase
     .from('sales')
     .select('*')
@@ -116,7 +116,7 @@ export async function getSellerDetails(seller, month, year) {
 
   if (error) throw new Error('Erro ao buscar vendas: ' + error.message);
 
-  // 2. Busca a meta definida
+  // 2. Busca meta
   const { data: goalData } = await supabase
     .from('seller_goals')
     .select('goal_value')
