@@ -84,8 +84,8 @@ export default function DashboardClient({
       const sheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[sheetName];
       
-      // Converte para JSON bruto (array de arrays)
-      const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+      // Usa defval para garantir que colunas vazias venham como string vazia, igual ao HTML
+const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
       console.log(`4. Leitura do Excel concluída. Linhas encontradas: ${jsonData.length}`);
 
       if (jsonData.length < 2) {
