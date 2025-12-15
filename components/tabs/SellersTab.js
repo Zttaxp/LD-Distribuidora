@@ -60,7 +60,7 @@ export default function SellersTab({ sellers = [], settings }) {
     setExpandedClients(prev => ({ ...prev, [clientName]: !prev[clientName] }));
   };
 
-  // --- 2. CÁLCULOS GERAIS ---
+  // --- 2. CÁLCULOS ---
   const salesList = detailData?.sales || [];
   const commRate = Number(settings?.comm_rate || 3);
 
@@ -76,48 +76,31 @@ export default function SellersTab({ sellers = [], settings }) {
   const grossRevenue = totals.netRevenue + totals.freight;
   const avgPrice = totals.m2 > 0 ? totals.netRevenue / totals.m2 : 0;
   const commission = totals.netRevenue * (commRate / 100);
-  
-  // ALTERAÇÃO: Lucro Real agora é apenas (Venda Líquida - Custo)
   const totalProfit = totals.netRevenue - totals.cost;
 
   const goal = Number(localGoal) || 0;
   const progressPct = goal > 0 ? (totals.netRevenue / goal) * 100 : 0;
   const missing = Math.max(0, goal - totals.netRevenue);
 
-  // --- 3. AGRUPAMENTO POR CLIENTE ---
+  // --- 3. AGRUPAMENTO ---
   const groupedData = useMemo(() => {
     const groups = {};
-    
     salesList.forEach(sale => {
       const client = sale.client || 'Consumidor Final';
       if (!groups[client]) {
         groups[client] = { 
           name: client, 
           items: [],
-          totalM2: 0,
-          totalRevenue: 0,
-          totalFreight: 0,
-          totalCost: 0,
-          totalGross: 0
+          totalM2: 0, totalRevenue: 0, totalFreight: 0, totalCost: 0, totalGross: 0
         };
       }
       
       const sRev = Number(sale.revenue || 0);
       const sCost = Number(sale.cost || 0);
-      
-      // ALTERAÇÃO: Cálculo Individual (Lucro = Venda - Custo)
       const sProfit = sRev - sCost;
-      
-      // ALTERAÇÃO: Margem = ((Venda - Custo) / Custo) * 100
-      // Nota: sProfit já é (Venda - Custo)
       const sMargin = sCost > 0 ? (sProfit / sCost) * 100 : 0;
 
-      const itemWithCalc = {
-        ...sale,
-        profit: sProfit,
-        margin: sMargin
-      };
-
+      const itemWithCalc = { ...sale, profit: sProfit, margin: sMargin };
       groups[client].items.push(itemWithCalc);
       
       groups[client].totalM2 += Number(sale.m2_total || 0);
@@ -128,15 +111,11 @@ export default function SellersTab({ sellers = [], settings }) {
     });
 
     return Object.values(groups).map(g => {
-        // ALTERAÇÃO: Cálculo do Grupo (Lucro = Venda - Custo)
         const gProfit = g.totalRevenue - g.totalCost;
         const gMargin = g.totalCost > 0 ? (gProfit / g.totalCost) * 100 : 0;
-        
         return { ...g, profit: gProfit, margin: gMargin };
     }).sort((a, b) => b.totalRevenue - a.totalRevenue);
-
-  }, [salesList]); // Removido dependência de taxas pois não são mais usadas no lucro
-
+  }, [salesList]);
 
   const formatBRL = (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
   const formatNum = (val) => new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val || 0);
@@ -213,7 +192,7 @@ export default function SellersTab({ sellers = [], settings }) {
             </div>
           </div>
 
-          {/* SEÇÃO 3: LISTA AGRUPADA POR CLIENTE */}
+          {/* SEÇÃO 3: LISTA */}
           <div className="bg-white border border-slate-200 rounded-lg shadow-sm">
             <div className="p-3 border-b border-slate-200 bg-slate-50 flex justify-between items-center">
                <h3 className="font-bold text-slate-700 text-sm flex items-center gap-2"><List size={16}/> Vendas por Cliente</h3>
@@ -243,9 +222,13 @@ export default function SellersTab({ sellers = [], settings }) {
                                 className="grid grid-cols-12 p-3 text-xs items-center cursor-pointer border-l-4 border-transparent hover:border-cyan-500"
                               >
                                  <div className="col-span-4 flex items-center gap-2 font-bold text-slate-800 truncate">
-                                    {isExpanded ? <ChevronDown size={14} className="text-cyan-600"/> : <ChevronRight size={14} className="text-slate-400"/>}
-                                    {group.name}
-                                    <span className="text-[9px] font-normal text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full ml-2">
+                                    {/* CORREÇÃO: shrink-0 IMPEDE QUE A SETA SUMA */}
+                                    {isExpanded ? 
+                                      <ChevronDown size={14} className="text-cyan-600 shrink-0"/> : 
+                                      <ChevronRight size={14} className="text-slate-400 shrink-0"/>
+                                    }
+                                    <span className="truncate">{group.name}</span>
+                                    <span className="text-[9px] font-normal text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full ml-2 shrink-0">
                                        {group.items.length} itens
                                     </span>
                                  </div>
@@ -270,7 +253,7 @@ export default function SellersTab({ sellers = [], settings }) {
                                              <th className="pb-2 text-right">M²</th>
                                              <th className="pb-2 text-right">Venda Liq.</th>
                                              <th className="pb-2 text-right">Custo (CMV)</th>
-                                             <th className="pb-2 text-right">Lucro Real</th>
+                                             <th className="pb-2 text-right">Lucro Bruto</th>
                                              <th className="pb-2 text-right pr-2">Margem %</th>
                                           </tr>
                                        </thead>
@@ -290,7 +273,7 @@ export default function SellersTab({ sellers = [], settings }) {
                                        </tbody>
                                     </table>
                                     <div className="text-[9px] text-slate-400 mt-2 italic text-right pr-2">
-                                       * Lucro = Venda Líq. - CMV (Custo) | Margem = (Lucro/CMV)*100
+                                       * Lucro = Venda Líq. - CMV | Margem = (Lucro/CMV)*100
                                     </div>
                                  </div>
                               )}
