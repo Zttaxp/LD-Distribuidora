@@ -3,6 +3,8 @@ import DashboardClient from '@/components/DashboardClient';
 import DashboardSkeleton from '@/components/ui/DashboardSkeleton';
 import { Suspense } from 'react';
 
+export const dynamic = 'force-dynamic';
+
 // Função auxiliar para buscar dados em paralelo
 async function loadDashboardData() {
   const supabase = createClient();
