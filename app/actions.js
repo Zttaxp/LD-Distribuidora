@@ -161,3 +161,41 @@ export async function getSellerDetails(seller, month, year) {
     goal: goalData?.goal_value || 0
   };
 }
+
+export async function getTopMaterials(month, year) {
+  const supabase = createServerActionClient({ cookies });
+  
+  // Define intervalo do mês
+  const startDate = new Date(year, month - 1, 1).toISOString();
+  const endDate = new Date(year, month, 0, 23, 59, 59).toISOString();
+
+  // Busca apenas as colunas necessárias para performance
+  const { data, error } = await supabase
+    .from('sales')
+    .select('material, m2_total, revenue')
+    .gte('date', startDate)
+    .lte('date', endDate);
+
+  if (error || !data) return { high: [], low: [] };
+
+  // Agrupa por nome do material
+  const grouped = data.reduce((acc, curr) => {
+    const mat = (curr.material || 'OUTROS').trim().toUpperCase();
+    if (!acc[mat]) acc[mat] = { name: mat, m2: 0, revenue: 0 };
+    
+    acc[mat].m2 += Number(curr.m2_total || 0);
+    acc[mat].revenue += Number(curr.revenue || 0); // Usa Revenue (Valor Pedra)
+    return acc;
+  }, {});
+
+  const list = Object.values(grouped).map(item => ({
+    ...item,
+    price: item.m2 > 0 ? item.revenue / item.m2 : 0
+  }));
+
+  // Separação por Alto Valor (> 300) e Baixo Valor (<= 300)
+  const high = list.filter(i => i.price > 300).sort((a, b) => b.revenue - a.revenue);
+  const low = list.filter(i => i.price <= 300).sort((a, b) => b.revenue - a.revenue);
+
+  return { high, low };
+}

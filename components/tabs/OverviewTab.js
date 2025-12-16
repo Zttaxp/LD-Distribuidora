@@ -1,9 +1,11 @@
 "use client";
 
 import { useState, useMemo, useEffect } from 'react';
-import { TrendingUp, Users, Package, Wallet, DollarSign, Activity, Calendar, Loader2, Layers, ArrowUpRight, ArrowDownRight } from 'lucide-react';
+import { TrendingUp, Users, Package, Wallet, DollarSign, Activity, Calendar, Loader2, Layers, ArrowUpRight, ArrowDownRight, Gem } from 'lucide-react';
 import { Bar, Doughnut, Line } from 'react-chartjs-2';
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, BarElement, ArcElement, Title, Tooltip, Legend, Filler } from 'chart.js';
+// Importamos a nova ação
+import { getTopMaterials } from '@/app/actions';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, ArcElement, Title, Tooltip, Legend, Filler);
 
@@ -12,6 +14,9 @@ const MONTH_NAMES = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Jun
 export default function OverviewTab({ summary = [], settings, expenses = [] }) {
   const [selectedMonth, setSelectedMonth] = useState('');
   const [isMounted, setIsMounted] = useState(false);
+  
+  // Estado para os Rankings de Materiais
+  const [materials, setMaterials] = useState({ high: [], low: [], loading: false });
 
   useEffect(() => { setIsMounted(true); }, []);
 
@@ -24,6 +29,8 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
       .map(item => ({
         key: `${item.year}-${item.month}`,
         label: `${MONTH_NAMES[Number(item.month)]} de ${item.year}`,
+        year: Number(item.year),
+        month: Number(item.month),
         original: item
       }));
   }, [summary]);
@@ -32,13 +39,31 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
     if (months.length > 0 && !selectedMonth) setSelectedMonth(months[0].key);
   }, [months, selectedMonth]);
 
-  // 2. DADOS DO MÊS SELECIONADO
+  // 2. BUSCA DO RANKING DETALHADO (NOVO)
+  useEffect(() => {
+    if (!selectedMonth) return;
+    
+    async function fetchMaterials() {
+        setMaterials(prev => ({ ...prev, loading: true }));
+        const [year, month] = selectedMonth.split('-').map(Number);
+        try {
+            const data = await getTopMaterials(month, year);
+            setMaterials({ high: data.high, low: data.low, loading: false });
+        } catch (error) {
+            console.error("Erro ao buscar materiais", error);
+            setMaterials({ high: [], low: [], loading: false });
+        }
+    }
+    
+    fetchMaterials();
+  }, [selectedMonth]);
+
+  // 3. CÁLCULO DOS KPIs GERAIS
   const currentData = useMemo(() => {
     if (!summary || !selectedMonth) return null;
     return summary.find(s => `${s.year}-${s.month}` === selectedMonth);
   }, [summary, selectedMonth]);
 
-  // 3. CÁLCULO DOS KPIs
   const kpis = useMemo(() => {
     const def = { grossRev: 0, netRev: 0, profit: 0, margin: 0, m2: 0, avgPrice: 0, cmv: 0, freight: 0, taxes: 0, comms: 0, fixedOps: 0, varOps: 0, m2High: 0, m2Low: 0 };
     if (!currentData) return def;
@@ -50,7 +75,6 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
     const cmv = safeNum(currentData.total_cost);
     const m2 = safeNum(currentData.total_m2);
     
-    // Dados de Mix (Alto vs Baixo)
     const m2High = safeNum(currentData.total_m2_high);
     const m2Low = safeNum(currentData.total_m2_low);
 
@@ -72,16 +96,7 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
     return { grossRev, netRev, profit, margin, m2, avgPrice, cmv, freight, taxes, comms, fixedOps, varOps, m2High, m2Low };
   }, [currentData, settings, expenses, selectedMonth]);
 
-  // Dados para o Gráfico de Rosca (Mix)
-  const mixChartData = {
-    labels: ['Alto Valor (>R$300/m²)', 'Baixo Valor'],
-    datasets: [{
-      data: [kpis.m2High, kpis.m2Low],
-      backgroundColor: ['#8b5cf6', '#f97316'], // Roxo (Alto), Laranja (Baixo)
-      borderWidth: 0
-    }]
-  };
-
+  // Gráficos e Formatação
   const chartData = useMemo(() => {
     const safeExpenses = Array.isArray(expenses) ? expenses : [];
     const sortedHistory = (summary || [])
@@ -120,7 +135,7 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
   return (
     <div className="space-y-6 fade-in pb-10">
       
-      {/* HEADER */}
+      {/* HEADER SELETOR */}
       <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 flex justify-between items-center">
          <div>
             <h2 className="text-xl font-bold text-slate-800">Visão Geral</h2>
@@ -134,7 +149,7 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
          </div>
       </div>
       
-      {/* KPIS */}
+      {/* KPI CARDS */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
           <p className="text-xs font-bold text-slate-500 uppercase">Faturamento Bruto</p>
@@ -158,67 +173,85 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
         </div>
       </div>
 
-      {/* --- SEÇÃO: MIX DE PRODUTOS --- */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* GRÁFICO HISTÓRICO */}
-        <div className="md:col-span-2 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-            <h3 className="font-bold text-slate-700 mb-6 flex items-center gap-2"><TrendingUp size={20} className="text-cyan-600"/> Histórico Financeiro</h3>
-            <div className="h-64 w-full"><Line data={chartData} options={chartOptions} /></div>
+      {/* --- SEÇÃO NOVO: RANKING DETALHADO ALTO VS BAIXO --- */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* LISTA DE ALTO VALOR */}
+        <div className="bg-white p-5 rounded-xl shadow-sm border border-purple-200 flex flex-col h-[400px]">
+             <div className="flex justify-between items-center mb-4 border-b border-purple-100 pb-2">
+                 <h3 className="font-bold text-purple-800 flex items-center gap-2 text-sm"><Gem size={16}/> Alto Valor (&gt; R$300/m²)</h3>
+                 <span className="text-[10px] bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-bold">{formatNum(kpis.m2High)} m²</span>
+             </div>
+             {materials.loading ? (
+                <div className="flex-grow flex items-center justify-center"><Loader2 className="animate-spin text-purple-300"/></div>
+             ) : (
+                <div className="overflow-y-auto custom-scroll flex-grow">
+                    <table className="w-full text-xs text-left">
+                        <thead className="text-purple-400 font-semibold bg-purple-50 sticky top-0"><tr><th className="p-2 pl-3">Material</th><th className="p-2 text-right">M²</th><th className="p-2 text-right pr-3">Venda Total</th></tr></thead>
+                        <tbody className="divide-y divide-purple-50">
+                            {materials.high.length === 0 ? <tr><td colSpan="3" className="p-4 text-center text-slate-400">Sem vendas nesta categoria</td></tr> : 
+                                materials.high.map((m, i) => (
+                                    <tr key={i} className="hover:bg-purple-50/50">
+                                        <td className="p-2 pl-3 font-medium text-slate-700">{m.name}</td>
+                                        <td className="p-2 text-right text-slate-500">{formatNum(m.m2)}</td>
+                                        <td className="p-2 text-right pr-3 font-bold text-purple-700">{formatBRL(m.revenue)}</td>
+                                    </tr>
+                                ))
+                            }
+                        </tbody>
+                    </table>
+                </div>
+             )}
         </div>
 
-        {/* TABELA DE MIX (CORRIGIDO: &gt; em vez de >) */}
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col">
-            <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><Layers size={20} className="text-purple-600"/> Mix de Vendas</h3>
-            <div className="flex-grow flex flex-col justify-center items-center">
-                <div className="h-40 w-40 relative mb-4">
-                     <Doughnut data={mixChartData} options={{ cutout: '70%', plugins: { legend: { display: false } } }} />
-                     <div className="absolute inset-0 flex items-center justify-center flex-col">
-                        <span className="text-xs text-slate-400 font-bold uppercase">Total</span>
-                        <span className="text-lg font-bold text-slate-800">{formatNum(kpis.m2)}</span>
-                     </div>
+        {/* LISTA DE BAIXO VALOR */}
+        <div className="bg-white p-5 rounded-xl shadow-sm border border-orange-200 flex flex-col h-[400px]">
+             <div className="flex justify-between items-center mb-4 border-b border-orange-100 pb-2">
+                 <h3 className="font-bold text-orange-800 flex items-center gap-2 text-sm"><Layers size={16}/> Baixo Valor (&le; R$300/m²)</h3>
+                 <span className="text-[10px] bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-bold">{formatNum(kpis.m2Low)} m²</span>
+             </div>
+             {materials.loading ? (
+                <div className="flex-grow flex items-center justify-center"><Loader2 className="animate-spin text-orange-300"/></div>
+             ) : (
+                <div className="overflow-y-auto custom-scroll flex-grow">
+                    <table className="w-full text-xs text-left">
+                        <thead className="text-orange-400 font-semibold bg-orange-50 sticky top-0"><tr><th className="p-2 pl-3">Material</th><th className="p-2 text-right">M²</th><th className="p-2 text-right pr-3">Venda Total</th></tr></thead>
+                        <tbody className="divide-y divide-orange-50">
+                            {materials.low.length === 0 ? <tr><td colSpan="3" className="p-4 text-center text-slate-400">Sem vendas nesta categoria</td></tr> : 
+                                materials.low.map((m, i) => (
+                                    <tr key={i} className="hover:bg-orange-50/50">
+                                        <td className="p-2 pl-3 font-medium text-slate-700">{m.name}</td>
+                                        <td className="p-2 text-right text-slate-500">{formatNum(m.m2)}</td>
+                                        <td className="p-2 text-right pr-3 font-bold text-orange-700">{formatBRL(m.revenue)}</td>
+                                    </tr>
+                                ))
+                            }
+                        </tbody>
+                    </table>
                 </div>
-                
-                <div className="w-full">
-                    <div className="flex justify-between items-center text-xs mb-2 p-2 bg-purple-50 rounded border border-purple-100">
-                        <div className="flex items-center gap-2">
-                            <div className="w-3 h-3 rounded-full bg-purple-500"></div>
-                            {/* CORREÇÃO AQUI: &gt;300 */}
-                            <span className="font-bold text-purple-900">Alto Valor (&gt;300)</span>
-                        </div>
-                        <div className="text-right">
-                            <div className="font-bold text-purple-700">{formatNum(kpis.m2High)} m²</div>
-                            <div className="text-[10px] text-purple-500">{kpis.m2 > 0 ? formatPct((kpis.m2High/kpis.m2)*100) : '0%'}</div>
-                        </div>
-                    </div>
-
-                    <div className="flex justify-between items-center text-xs p-2 bg-orange-50 rounded border border-orange-100">
-                        <div className="flex items-center gap-2">
-                            <div className="w-3 h-3 rounded-full bg-orange-500"></div>
-                            <span className="font-bold text-orange-900">Baixo Valor</span>
-                        </div>
-                        <div className="text-right">
-                            <div className="font-bold text-orange-700">{formatNum(kpis.m2Low)} m²</div>
-                            <div className="text-[10px] text-orange-500">{kpis.m2 > 0 ? formatPct((kpis.m2Low/kpis.m2)*100) : '0%'}</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
+             )}
         </div>
       </div>
 
-      {/* DRE SIMPLIFICADO */}
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <h3 className="font-bold text-slate-700 mb-4 text-sm uppercase border-b border-slate-100 pb-2">Resumo Operacional ({months.find(m => m.key === selectedMonth)?.label})</h3>
-        <div className="space-y-3 text-sm">
-            <div className="flex justify-between font-bold text-slate-800"><span>(+) Total Nota Fiscal</span><span>{formatBRL(kpis.grossRev)}</span></div>
-            <div className="flex justify-between text-slate-500 text-xs pl-4"><span>(-) Fretes (Repasse)</span><span className="text-red-400">- {formatBRL(kpis.freight)}</span></div>
-            <div className="flex justify-between font-bold text-blue-700 border-t border-slate-100 pt-2"><span>(=) Receita Líquida (Pedra)</span><span>{formatBRL(kpis.netRev)}</span></div>
-            <div className="flex justify-between text-slate-600 pl-4"><span>(-) Custo Mercadoria (CMV)</span><span className="text-red-500">- {formatBRL(kpis.cmv)}</span></div>
-            <div className="flex justify-between text-slate-600 pl-4"><span>(-) Impostos & Comissões</span><span className="text-red-500">- {formatBRL(kpis.taxes + kpis.comms)}</span></div>
-            <div className="flex justify-between text-slate-600 pl-4"><span>(-) Despesas Fixas</span><span className="text-red-500">- {formatBRL(kpis.fixedOps)}</span></div>
-            {kpis.varOps > 0 && (<div className="flex justify-between text-slate-600 pl-4"><span>(-) Despesas Variáveis</span><span className="text-red-500">- {formatBRL(kpis.varOps)}</span></div>)}
-            <div className={`flex justify-between font-extrabold text-lg pt-3 border-t border-slate-200 mt-2 ${kpis.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}><span>(=) LUCRO LÍQUIDO</span><span>{formatBRL(kpis.profit)}</span></div>
-        </div>
+      {/* DRE SIMPLIFICADO & GRÁFICO (LADO A LADO) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+            <h3 className="font-bold text-slate-700 mb-6 flex items-center gap-2"><TrendingUp size={20} className="text-cyan-600"/> Histórico Financeiro</h3>
+            <div className="h-64 w-full"><Line data={chartData} options={chartOptions} /></div>
+          </div>
+
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+            <h3 className="font-bold text-slate-700 mb-4 text-sm uppercase border-b border-slate-100 pb-2">Resumo Operacional ({months.find(m => m.key === selectedMonth)?.label})</h3>
+            <div className="space-y-3 text-sm">
+                <div className="flex justify-between font-bold text-slate-800"><span>(+) Total Nota Fiscal</span><span>{formatBRL(kpis.grossRev)}</span></div>
+                <div className="flex justify-between text-slate-500 text-xs pl-4"><span>(-) Fretes (Repasse)</span><span className="text-red-400">- {formatBRL(kpis.freight)}</span></div>
+                <div className="flex justify-between font-bold text-blue-700 border-t border-slate-100 pt-2"><span>(=) Receita Líquida (Pedra)</span><span>{formatBRL(kpis.netRev)}</span></div>
+                <div className="flex justify-between text-slate-600 pl-4"><span>(-) Custo Mercadoria (CMV)</span><span className="text-red-500">- {formatBRL(kpis.cmv)}</span></div>
+                <div className="flex justify-between text-slate-600 pl-4"><span>(-) Impostos & Comissões</span><span className="text-red-500">- {formatBRL(kpis.taxes + kpis.comms)}</span></div>
+                <div className="flex justify-between text-slate-600 pl-4"><span>(-) Despesas Fixas</span><span className="text-red-500">- {formatBRL(kpis.fixedOps)}</span></div>
+                {kpis.varOps > 0 && (<div className="flex justify-between text-slate-600 pl-4"><span>(-) Despesas Variáveis</span><span className="text-red-500">- {formatBRL(kpis.varOps)}</span></div>)}
+                <div className={`flex justify-between font-extrabold text-lg pt-3 border-t border-slate-200 mt-2 ${kpis.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}><span>(=) LUCRO LÍQUIDO</span><span>{formatBRL(kpis.profit)}</span></div>
+            </div>
+          </div>
       </div>
     </div>
   );
