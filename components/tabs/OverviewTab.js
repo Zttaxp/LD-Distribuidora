@@ -4,7 +4,6 @@ import { useState, useMemo, useEffect } from 'react';
 import { TrendingUp, Users, Package, Wallet, DollarSign, Activity, Calendar, Loader2, Layers, Gem } from 'lucide-react';
 import { Bar, Doughnut, Line } from 'react-chartjs-2';
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, BarElement, ArcElement, Title, Tooltip, Legend, Filler } from 'chart.js';
-// Importamos a função corrigida
 import { getMonthlySalesData } from '@/app/actions';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, ArcElement, Title, Tooltip, Legend, Filler);
@@ -15,7 +14,6 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
   const [selectedMonth, setSelectedMonth] = useState('');
   const [isMounted, setIsMounted] = useState(false);
   
-  // Estado para armazenar as vendas brutas do mês
   const [rawSales, setRawSales] = useState([]);
   const [loadingSales, setLoadingSales] = useState(false);
 
@@ -40,19 +38,15 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
     if (months.length > 0 && !selectedMonth) setSelectedMonth(months[0].key);
   }, [months, selectedMonth]);
 
-  // 2. BUSCA AS VENDAS (CORRIGIDO: Passando Mês e Ano separados)
+  // 2. BUSCA AS VENDAS
   useEffect(() => {
     if (!selectedMonth) return;
 
     async function fetchData() {
         setLoadingSales(true);
         try {
-            // CORREÇÃO: Divide a chave "2025-12" em [2025, 12]
             const [yearStr, monthStr] = selectedMonth.split('-');
-            
-            // Chama a nova versão da Action passando os dois números
             const sales = await getMonthlySalesData(monthStr, yearStr);
-            
             setRawSales(sales || []);
         } catch (error) {
             console.error(error);
@@ -64,22 +58,24 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
     fetchData();
   }, [selectedMonth]);
 
-  // 3. PROCESSAMENTO DOS RANKINGS (Client-Side)
+  // 3. PROCESSAMENTO DOS RANKINGS (Com contagem de Chapas)
   const materialsRanking = useMemo(() => {
-    // Se não tiver vendas, retorna listas vazias
     if (!rawSales || rawSales.length === 0) return { high: [], low: [] };
 
     const grouped = {};
 
     rawSales.forEach(sale => {
         const mat = (sale.material || 'OUTROS').trim().toUpperCase();
-        if (!grouped[mat]) grouped[mat] = { name: mat, m2: 0, revenue: 0 };
+        
+        // Inicializa se não existir (Adicionado campo 'slabs')
+        if (!grouped[mat]) grouped[mat] = { name: mat, m2: 0, revenue: 0, slabs: 0 };
         
         const m2 = Number(sale.m2_total || 0);
         const rev = Number(sale.revenue || 0);
 
         grouped[mat].m2 += m2;
         grouped[mat].revenue += rev;
+        grouped[mat].slabs += 1; // Conta cada item como 1 chapa
     });
 
     const list = Object.values(grouped).map(item => ({
@@ -111,14 +107,10 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
     const freight = safeNum(currentData.total_freight);
     const cmv = safeNum(currentData.total_cost);
     const m2 = safeNum(currentData.total_m2);
-    
-    // Totais vindos do Summary (Isso já estava funcionando, vide seus prints)
     const m2High = safeNum(currentData.total_m2_high);
     const m2Low = safeNum(currentData.total_m2_low);
-
     const taxRate = safeNum(settings?.tax_rate);
     const commRate = safeNum(settings?.comm_rate);
-
     const taxes = netRev * (taxRate / 100);
     const comms = netRev * (commRate / 100);
 
@@ -264,12 +256,21 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
              ) : (
                 <div className="overflow-y-auto custom-scroll flex-grow">
                     <table className="w-full text-xs text-left">
-                        <thead className="text-purple-400 font-semibold bg-purple-50 sticky top-0"><tr><th className="p-2 pl-3">Material</th><th className="p-2 text-right">M²</th><th className="p-2 text-right pr-3">Venda Total</th></tr></thead>
+                        {/* COLUNA CHAPAS ADICIONADA AQUI */}
+                        <thead className="text-purple-400 font-semibold bg-purple-50 sticky top-0">
+                           <tr>
+                              <th className="p-2 pl-3">Material</th>
+                              <th className="p-2 text-center">Chapas</th>
+                              <th className="p-2 text-right">M²</th>
+                              <th className="p-2 text-right pr-3">Venda Total</th>
+                           </tr>
+                        </thead>
                         <tbody className="divide-y divide-purple-50">
-                            {materialsRanking.high.length === 0 ? <tr><td colSpan="3" className="p-4 text-center text-slate-400">Sem vendas nesta categoria</td></tr> : 
+                            {materialsRanking.high.length === 0 ? <tr><td colSpan="4" className="p-4 text-center text-slate-400">Sem vendas nesta categoria</td></tr> : 
                                 materialsRanking.high.map((m, i) => (
                                     <tr key={i} className="hover:bg-purple-50/50">
                                         <td className="p-2 pl-3 font-medium text-slate-700">{m.name}</td>
+                                        <td className="p-2 text-center text-slate-500 font-bold">{m.slabs}</td>
                                         <td className="p-2 text-right text-slate-500">{formatNum(m.m2)}</td>
                                         <td className="p-2 text-right pr-3 font-bold text-purple-700">{formatBRL(m.revenue)}</td>
                                     </tr>
@@ -292,12 +293,21 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
              ) : (
                 <div className="overflow-y-auto custom-scroll flex-grow">
                     <table className="w-full text-xs text-left">
-                        <thead className="text-orange-400 font-semibold bg-orange-50 sticky top-0"><tr><th className="p-2 pl-3">Material</th><th className="p-2 text-right">M²</th><th className="p-2 text-right pr-3">Venda Total</th></tr></thead>
+                        {/* COLUNA CHAPAS ADICIONADA AQUI */}
+                        <thead className="text-orange-400 font-semibold bg-orange-50 sticky top-0">
+                           <tr>
+                              <th className="p-2 pl-3">Material</th>
+                              <th className="p-2 text-center">Chapas</th>
+                              <th className="p-2 text-right">M²</th>
+                              <th className="p-2 text-right pr-3">Venda Total</th>
+                           </tr>
+                        </thead>
                         <tbody className="divide-y divide-orange-50">
-                            {materialsRanking.low.length === 0 ? <tr><td colSpan="3" className="p-4 text-center text-slate-400">Sem vendas nesta categoria</td></tr> : 
+                            {materialsRanking.low.length === 0 ? <tr><td colSpan="4" className="p-4 text-center text-slate-400">Sem vendas nesta categoria</td></tr> : 
                                 materialsRanking.low.map((m, i) => (
                                     <tr key={i} className="hover:bg-orange-50/50">
                                         <td className="p-2 pl-3 font-medium text-slate-700">{m.name}</td>
+                                        <td className="p-2 text-center text-slate-500 font-bold">{m.slabs}</td>
                                         <td className="p-2 text-right text-slate-500">{formatNum(m.m2)}</td>
                                         <td className="p-2 text-right pr-3 font-bold text-orange-700">{formatBRL(m.revenue)}</td>
                                     </tr>
