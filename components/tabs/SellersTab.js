@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from 'react';
-import { Target, Trophy, Filter, Download, Calendar, DollarSign, List, Truck, Calculator, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
+import { Target, Trophy, Filter, Download, Calendar, DollarSign, List, Truck, Calculator, Loader2, ChevronDown, ChevronRight, Gem, Layers, ArrowUpDown } from 'lucide-react';
 import { getSellerDetails, saveSellerGoal } from '@/app/actions';
 
 export default function SellersTab({ sellers = [], settings }) {
@@ -12,6 +12,7 @@ export default function SellersTab({ sellers = [], settings }) {
   const [localGoal, setLocalGoal] = useState(0);
   
   const [expandedClients, setExpandedClients] = useState({});
+  const [sortBy, setSortBy] = useState('TOTAL'); // 'TOTAL' ou 'HIGH_VALUE'
 
   // --- 1. FILTROS ---
   const sellersList = useMemo(() => {
@@ -74,15 +75,13 @@ export default function SellersTab({ sellers = [], settings }) {
   }, [salesList]);
 
   const grossRevenue = totals.netRevenue + totals.freight;
-  const avgPrice = totals.m2 > 0 ? totals.netRevenue / totals.m2 : 0;
   const commission = totals.netRevenue * (commRate / 100);
   const totalProfit = totals.netRevenue - totals.cost;
-
   const goal = Number(localGoal) || 0;
   const progressPct = goal > 0 ? (totals.netRevenue / goal) * 100 : 0;
   const missing = Math.max(0, goal - totals.netRevenue);
 
-  // --- 3. AGRUPAMENTO ---
+  // --- 3. AGRUPAMENTO E CLASSIFICAÇÃO (ALTO/BAIXO VALOR) ---
   const groupedData = useMemo(() => {
     const groups = {};
     salesList.forEach(sale => {
@@ -91,31 +90,51 @@ export default function SellersTab({ sellers = [], settings }) {
         groups[client] = { 
           name: client, 
           items: [],
-          totalM2: 0, totalRevenue: 0, totalFreight: 0, totalCost: 0, totalGross: 0
+          totalM2: 0, totalRevenue: 0, totalFreight: 0, totalCost: 0, totalGross: 0,
+          highValueRevenue: 0, // Novo KPI
+          highValueM2: 0       // Novo KPI
         };
       }
       
       const sRev = Number(sale.revenue || 0);
       const sCost = Number(sale.cost || 0);
+      const sM2 = Number(sale.m2_total || 0);
       const sProfit = sRev - sCost;
       const sMargin = sCost > 0 ? (sProfit / sCost) * 100 : 0;
+      
+      // Classificação Individual da Chapa
+      const unitPrice = sM2 > 0 ? sRev / sM2 : 0;
+      const isHighValue = unitPrice > 300;
 
-      const itemWithCalc = { ...sale, profit: sProfit, margin: sMargin };
+      const itemWithCalc = { ...sale, profit: sProfit, margin: sMargin, unitPrice, isHighValue };
       groups[client].items.push(itemWithCalc);
       
-      groups[client].totalM2 += Number(sale.m2_total || 0);
+      groups[client].totalM2 += sM2;
       groups[client].totalRevenue += sRev;
       groups[client].totalFreight += Number(sale.freight || 0);
       groups[client].totalCost += sCost;
       groups[client].totalGross += (sRev + Number(sale.freight || 0));
+
+      // Acumula KPIs de Alto Valor
+      if (isHighValue) {
+          groups[client].highValueRevenue += sRev;
+          groups[client].highValueM2 += sM2;
+      }
     });
 
-    return Object.values(groups).map(g => {
+    const list = Object.values(groups).map(g => {
         const gProfit = g.totalRevenue - g.totalCost;
         const gMargin = g.totalCost > 0 ? (gProfit / g.totalCost) * 100 : 0;
         return { ...g, profit: gProfit, margin: gMargin };
-    }).sort((a, b) => b.totalRevenue - a.totalRevenue);
-  }, [salesList]);
+    });
+
+    // Lógica de Ordenação
+    if (sortBy === 'HIGH_VALUE') {
+        return list.sort((a, b) => b.highValueRevenue - a.highValueRevenue);
+    }
+    return list.sort((a, b) => b.totalRevenue - a.totalRevenue);
+
+  }, [salesList, sortBy]);
 
   const formatBRL = (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
   const formatNum = (val) => new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val || 0);
@@ -173,30 +192,41 @@ export default function SellersTab({ sellers = [], settings }) {
             <div className="px-4">
               <p className="text-[10px] text-slate-300 uppercase font-bold flex items-center gap-1"><Truck size={12}/> Fretes</p>
               <p className="text-lg font-bold text-orange-300 mt-1">{formatBRL(totals.freight)}</p>
-              <p className="text-[9px] text-slate-400">Repasse</p>
             </div>
             <div className="px-4">
               <p className="text-[10px] text-slate-300 uppercase font-bold flex items-center gap-1"><Calculator size={12}/> Faturamento Total</p>
               <p className="text-lg font-bold text-blue-300 mt-1">{formatBRL(grossRevenue)}</p>
-              <p className="text-[9px] text-slate-400">Venda + Frete</p>
             </div>
             <div className="px-4">
               <p className="text-[10px] text-slate-300 uppercase font-bold">Lucro Real (Bruto)</p>
               <p className={`text-lg font-bold mt-1 ${totalProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>{formatBRL(totalProfit)}</p>
-              <p className="text-[9px] text-slate-400">Venda - CMV</p>
             </div>
             <div className="px-4">
               <p className="text-[10px] text-slate-300 uppercase font-bold flex items-center gap-1"><Trophy size={12}/> Comissão ({commRate}%)</p>
               <p className="text-lg font-bold text-yellow-400 mt-1">{formatBRL(commission)}</p>
-              <p className="text-[9px] text-slate-400">Estimada</p>
             </div>
           </div>
 
           {/* SEÇÃO 3: LISTA */}
           <div className="bg-white border border-slate-200 rounded-lg shadow-sm">
-            <div className="p-3 border-b border-slate-200 bg-slate-50 flex justify-between items-center">
+            <div className="p-3 border-b border-slate-200 bg-slate-50 flex flex-col md:flex-row justify-between items-center gap-3">
                <h3 className="font-bold text-slate-700 text-sm flex items-center gap-2"><List size={16}/> Vendas por Cliente</h3>
-               <button className="text-xs font-bold text-slate-500 flex items-center gap-1 hover:text-slate-800"><Download size={14}/> Exportar</button>
+               
+               {/* BOTÕES DE ORDENAÇÃO */}
+               <div className="flex bg-slate-200 p-1 rounded-md">
+                  <button 
+                    onClick={() => setSortBy('TOTAL')}
+                    className={`flex items-center gap-1 px-3 py-1 rounded text-xs font-bold transition-all ${sortBy === 'TOTAL' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                  >
+                    <DollarSign size={12}/> Venda Total
+                  </button>
+                  <button 
+                    onClick={() => setSortBy('HIGH_VALUE')}
+                    className={`flex items-center gap-1 px-3 py-1 rounded text-xs font-bold transition-all ${sortBy === 'HIGH_VALUE' ? 'bg-white text-purple-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                  >
+                    <Gem size={12}/> Ranking Alto Valor
+                  </button>
+               </div>
             </div>
             
             <div className="overflow-x-auto">
@@ -208,37 +238,50 @@ export default function SellersTab({ sellers = [], settings }) {
                         <div className="col-span-4 pl-8">Cliente</div>
                         <div className="col-span-1 text-right">M²</div>
                         <div className="col-span-2 text-right">Venda (Pedra)</div>
+                        {/* Nova Coluna de Destaque */}
+                        <div className="col-span-2 text-right text-purple-600">Alto Valor (&gt;300)</div>
                         <div className="col-span-1 text-right">Frete</div>
-                        <div className="col-span-2 text-right">Total Nota</div>
                         <div className="col-span-2 text-right pr-2">Lucro / Margem</div>
                      </div>
 
                      {groupedData.map((group, idx) => {
                         const isExpanded = expandedClients[group.name];
+                        const highValuePct = group.totalRevenue > 0 ? (group.highValueRevenue / group.totalRevenue) * 100 : 0;
+                        
                         return (
                            <div key={idx} className="bg-white transition-colors hover:bg-slate-50">
                               <div 
                                 onClick={() => toggleClient(group.name)} 
-                                className="grid grid-cols-12 p-3 text-xs items-center cursor-pointer border-l-4 border-transparent hover:border-cyan-500"
+                                className={`grid grid-cols-12 p-3 text-xs items-center cursor-pointer border-l-4 ${sortBy === 'HIGH_VALUE' ? 'border-purple-400' : 'border-transparent hover:border-cyan-500'}`}
                               >
                                  <div className="col-span-4 flex items-center gap-2 font-bold text-slate-800 truncate">
-                                    {/* CORREÇÃO: shrink-0 IMPEDE QUE A SETA SUMA */}
                                     {isExpanded ? 
                                       <ChevronDown size={14} className="text-cyan-600 shrink-0"/> : 
                                       <ChevronRight size={14} className="text-slate-400 shrink-0"/>
                                     }
                                     <span className="truncate">{group.name}</span>
-                                    <span className="text-[9px] font-normal text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full ml-2 shrink-0">
-                                       {group.items.length} itens
-                                    </span>
+                                    {/* Indicador se o cliente é Premium (muito alto valor) */}
+                                    {highValuePct > 50 && <Gem size={12} className="text-purple-500 shrink-0" title="Cliente Premium (Maioria Alto Valor)" />}
                                  </div>
                                  <div className="col-span-1 text-right text-slate-500">{formatNum(group.totalM2)}</div>
                                  <div className="col-span-2 text-right font-medium text-blue-700">{formatBRL(group.totalRevenue)}</div>
+                                 
+                                 {/* Coluna Ranking Alto Valor */}
+                                 <div className="col-span-2 text-right flex flex-col justify-center items-end">
+                                    <span className={`font-bold ${group.highValueRevenue > 0 ? 'text-purple-700' : 'text-slate-300'}`}>
+                                        {formatBRL(group.highValueRevenue)}
+                                    </span>
+                                    {group.highValueRevenue > 0 && (
+                                        <span className="text-[9px] bg-purple-100 text-purple-700 px-1 rounded">
+                                            {highValuePct.toFixed(0)}% do mix
+                                        </span>
+                                    )}
+                                 </div>
+
                                  <div className="col-span-1 text-right text-orange-600">{group.totalFreight > 0 ? formatBRL(group.totalFreight) : '-'}</div>
-                                 <div className="col-span-2 text-right font-bold text-slate-800">{formatBRL(group.totalGross)}</div>
                                  <div className="col-span-2 text-right pr-2">
                                     <div className={`font-bold ${group.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatBRL(group.profit)}</div>
-                                    <div className="text-[9px] text-slate-400 font-medium">Margem: {group.margin.toFixed(1)}%</div>
+                                    <div className="text-[9px] text-slate-400 font-medium">{group.margin.toFixed(1)}%</div>
                                  </div>
                               </div>
 
@@ -248,33 +291,41 @@ export default function SellersTab({ sellers = [], settings }) {
                                        <thead className="text-slate-400 font-semibold border-b border-slate-200">
                                           <tr>
                                              <th className="pb-2 pl-2">Data</th>
-                                             <th className="pb-2">Material</th>
+                                             <th className="pb-2">Material / Classificação</th>
                                              <th className="pb-2 text-center">Chapa</th>
                                              <th className="pb-2 text-right">M²</th>
+                                             <th className="pb-2 text-right">R$/m²</th>
                                              <th className="pb-2 text-right">Venda Liq.</th>
-                                             <th className="pb-2 text-right">Custo (CMV)</th>
-                                             <th className="pb-2 text-right">Lucro Bruto</th>
-                                             <th className="pb-2 text-right pr-2">Margem %</th>
+                                             <th className="pb-2 text-right">Lucro</th>
                                           </tr>
                                        </thead>
                                        <tbody className="divide-y divide-slate-200/50">
                                           {group.items.sort((a,b) => new Date(a.date) - new Date(b.date)).map((item, i) => (
                                              <tr key={i} className="hover:bg-slate-100">
                                                 <td className="py-2 pl-2 text-slate-500">{new Date(item.date).toLocaleDateString()}</td>
-                                                <td className="py-2 text-slate-700 font-medium truncate max-w-[150px]">{item.material}</td>
+                                                <td className="py-2 text-slate-700 font-medium">
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="truncate max-w-[150px]">{item.material}</span>
+                                                        {item.isHighValue ? (
+                                                            <span className="flex items-center gap-1 bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded text-[9px] font-bold border border-purple-200">
+                                                                <Gem size={8} /> Alto
+                                                            </span>
+                                                        ) : (
+                                                            <span className="flex items-center gap-1 bg-orange-50 text-orange-700 px-1.5 py-0.5 rounded text-[9px] font-bold border border-orange-100">
+                                                                <Layers size={8} /> Baixo
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </td>
                                                 <td className="py-2 text-center text-slate-500">{item.chapa || '-'}</td>
                                                 <td className="py-2 text-right text-slate-500">{formatNum(item.m2_total)}</td>
+                                                <td className="py-2 text-right text-slate-400">{formatBRL(item.unitPrice)}</td>
                                                 <td className="py-2 text-right text-blue-700 font-medium">{formatBRL(item.revenue)}</td>
-                                                <td className="py-2 text-right text-slate-400">{formatBRL(item.cost)}</td>
-                                                <td className={`py-2 text-right font-bold ${item.profit >= 0 ? 'text-green-600' : 'text-red-500'}`}>{formatBRL(item.profit)}</td>
-                                                <td className="py-2 text-right pr-2 font-bold text-slate-600">{item.margin.toFixed(1)}%</td>
+                                                <td className={`py-2 text-right font-bold pr-2 ${item.profit >= 0 ? 'text-green-600' : 'text-red-500'}`}>{formatBRL(item.profit)}</td>
                                              </tr>
                                           ))}
                                        </tbody>
                                     </table>
-                                    <div className="text-[9px] text-slate-400 mt-2 italic text-right pr-2">
-                                       * Lucro = Venda Líq. - CMV | Margem = (Lucro/CMV)*100
-                                    </div>
                                  </div>
                               )}
                            </div>
