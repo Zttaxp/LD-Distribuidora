@@ -274,3 +274,35 @@ export async function processUpload(formData) {
     return { success: false, message: 'Erro ao processar planilha: ' + error.message };
   }
 }
+
+// --- RANKING GERAL DE VENDEDORES (NOVO) ---
+export async function getSellersRanking(month, year) {
+  const supabase = await createClient();
+  
+  const { data, error } = await supabase
+    .from('sales')
+    .select('seller, revenue, m2_total')
+    .eq('month', month)
+    .eq('year', year);
+
+  if (error || !data) return [];
+
+  const grouped = data.reduce((acc, curr) => {
+     const seller = (curr.seller || 'DESCONHECIDO').toUpperCase();
+     if (!acc[seller]) acc[seller] = { name: seller, totalRev: 0, highRev: 0 };
+     
+     const rev = Number(curr.revenue || 0);
+     const m2 = Number(curr.m2_total || 0);
+     
+     // Checagem de Alto Valor (> 300) linha a linha
+     const price = m2 > 0 ? rev / m2 : 0;
+     
+     acc[seller].totalRev += rev;
+     if (price > 300) acc[seller].highRev += rev;
+     
+     return acc;
+  }, {});
+
+  // Retorna ordenado por Faturamento Total
+  return Object.values(grouped).sort((a, b) => b.totalRev - a.totalRev);
+}
