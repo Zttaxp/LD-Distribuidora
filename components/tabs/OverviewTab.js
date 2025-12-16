@@ -58,24 +58,17 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
     fetchData();
   }, [selectedMonth]);
 
-  // 3. PROCESSAMENTO DOS RANKINGS (Com contagem de Chapas)
+  // 3. RANKINGS (Mantido igual)
   const materialsRanking = useMemo(() => {
     if (!rawSales || rawSales.length === 0) return { high: [], low: [] };
 
     const grouped = {};
-
     rawSales.forEach(sale => {
         const mat = (sale.material || 'OUTROS').trim().toUpperCase();
-        
-        // Inicializa se não existir (Adicionado campo 'slabs')
         if (!grouped[mat]) grouped[mat] = { name: mat, m2: 0, revenue: 0, slabs: 0 };
-        
-        const m2 = Number(sale.m2_total || 0);
-        const rev = Number(sale.revenue || 0);
-
-        grouped[mat].m2 += m2;
-        grouped[mat].revenue += rev;
-        grouped[mat].slabs += 1; // Conta cada item como 1 chapa
+        grouped[mat].m2 += Number(sale.m2_total || 0);
+        grouped[mat].revenue += Number(sale.revenue || 0);
+        grouped[mat].slabs += 1;
     });
 
     const list = Object.values(grouped).map(item => ({
@@ -83,7 +76,6 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
         price: item.m2 > 0 ? item.revenue / item.m2 : 0
     }));
 
-    // Separação R$300
     const high = list.filter(i => i.price > 300).sort((a, b) => b.revenue - a.revenue);
     const low = list.filter(i => i.price <= 300).sort((a, b) => b.revenue - a.revenue);
 
@@ -91,14 +83,14 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
   }, [rawSales]);
 
 
-  // 4. CÁLCULO KPIS GERAIS
+  // 4. CÁLCULO KPIS (CORRIGIDO: Incluindo Inadimplência)
   const currentData = useMemo(() => {
     if (!summary || !selectedMonth) return null;
     return summary.find(s => `${s.year}-${s.month}` === selectedMonth);
   }, [summary, selectedMonth]);
 
   const kpis = useMemo(() => {
-    const def = { grossRev: 0, netRev: 0, profit: 0, margin: 0, m2: 0, avgPrice: 0, cmv: 0, freight: 0, taxes: 0, comms: 0, fixedOps: 0, varOps: 0, m2High: 0, m2Low: 0 };
+    const def = { grossRev: 0, netRev: 0, profit: 0, margin: 0, m2: 0, avgPrice: 0, cmv: 0, freight: 0, taxes: 0, comms: 0, fixedOps: 0, varOps: 0, badDebt: 0, m2High: 0, m2Low: 0 };
     if (!currentData) return def;
 
     const safeNum = (val) => Number(val) || 0;
@@ -109,21 +101,30 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
     const m2 = safeNum(currentData.total_m2);
     const m2High = safeNum(currentData.total_m2_high);
     const m2Low = safeNum(currentData.total_m2_low);
+    
+    // Configurações
     const taxRate = safeNum(settings?.tax_rate);
     const commRate = safeNum(settings?.comm_rate);
+    const badDebtRate = safeNum(settings?.bad_debt_rate); // Captura taxa de Inadimplência
+
+    // Deduções Variáveis
     const taxes = netRev * (taxRate / 100);
     const comms = netRev * (commRate / 100);
+    const badDebt = netRev * (badDebtRate / 100); // Calcula valor da Inadimplência
 
     const safeExpenses = Array.isArray(expenses) ? expenses : [];
     const fixedOps = safeExpenses.filter(e => e.type === 'FIXED').reduce((acc, curr) => acc + safeNum(curr.value), 0);
     const varOps = safeExpenses.filter(e => e.type === 'VARIABLE' && e.month_key === selectedMonth).reduce((acc, curr) => acc + safeNum(curr.value), 0);
 
     const grossRev = netRev + freight;
-    const profit = netRev - cmv - taxes - comms - fixedOps - varOps;
+    
+    // FÓRMULA CORRIGIDA: Subtrai também a Inadimplência (badDebt)
+    const profit = netRev - cmv - taxes - comms - badDebt - fixedOps - varOps;
+    
     const margin = netRev > 0 ? (profit / netRev) * 100 : 0;
     const avgPrice = m2 > 0 ? netRev / m2 : 0;
 
-    return { grossRev, netRev, profit, margin, m2, avgPrice, cmv, freight, taxes, comms, fixedOps, varOps, m2High, m2Low };
+    return { grossRev, netRev, profit, margin, m2, avgPrice, cmv, freight, taxes, comms, badDebt, fixedOps, varOps, m2High, m2Low };
   }, [currentData, settings, expenses, selectedMonth]);
 
   // Gráficos
@@ -144,14 +145,19 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
 
     const labels = sortedHistory.map(d => `${d.month}/${d.year}`);
     const revenues = sortedHistory.map(d => (Number(d.total_net_revenue)||0) + (Number(d.total_freight)||0));
+    
+    // CORREÇÃO NO GRÁFICO TAMBÉM
     const profits = sortedHistory.map(d => {
         const net = Number(d.total_net_revenue)||0;
         const cost = Number(d.total_cost)||0;
         const tax = net * ((Number(settings?.tax_rate)||0)/100);
         const comm = net * ((Number(settings?.comm_rate)||0)/100);
+        const bDebt = net * ((Number(settings?.bad_debt_rate)||0)/100); // Inadimplência no histórico
+        
         const fixed = safeExpenses.filter(e => e.type === 'FIXED').reduce((acc, curr) => acc + (Number(curr.value)||0), 0);
         const variable = safeExpenses.filter(e => e.type === 'VARIABLE' && e.month_key === `${d.year}-${d.month}`).reduce((acc, curr) => acc + (Number(curr.value)||0), 0);
-        return net - cost - tax - comm - fixed - variable;
+        
+        return net - cost - tax - comm - bDebt - fixed - variable;
     });
 
     return {
@@ -188,7 +194,7 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
          </div>
       </div>
       
-      {/* KPI CARDS */}
+      {/* KPIS */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
           <p className="text-xs font-bold text-slate-500 uppercase">Faturamento Bruto</p>
@@ -212,7 +218,7 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
         </div>
       </div>
 
-      {/* --- SEÇÃO MIX DE PRODUTOS --- */}
+      {/* --- MIX --- */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="md:col-span-2 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
             <h3 className="font-bold text-slate-700 mb-6 flex items-center gap-2"><TrendingUp size={20} className="text-cyan-600"/> Histórico Financeiro</h3>
@@ -243,9 +249,8 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
         </div>
       </div>
       
-      {/* RANKING DETALHADO */}
+      {/* RANKING */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-         {/* LISTA DE ALTO VALOR */}
          <div className="bg-white p-5 rounded-xl shadow-sm border border-purple-200 flex flex-col h-[400px]">
              <div className="flex justify-between items-center mb-4 border-b border-purple-100 pb-2">
                  <h3 className="font-bold text-purple-800 flex items-center gap-2 text-sm"><Gem size={16}/> Alto Valor (&gt; R$300/m²)</h3>
@@ -256,15 +261,7 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
              ) : (
                 <div className="overflow-y-auto custom-scroll flex-grow">
                     <table className="w-full text-xs text-left">
-                        {/* COLUNA CHAPAS ADICIONADA AQUI */}
-                        <thead className="text-purple-400 font-semibold bg-purple-50 sticky top-0">
-                           <tr>
-                              <th className="p-2 pl-3">Material</th>
-                              <th className="p-2 text-center">Chapas</th>
-                              <th className="p-2 text-right">M²</th>
-                              <th className="p-2 text-right pr-3">Venda Total</th>
-                           </tr>
-                        </thead>
+                        <thead className="text-purple-400 font-semibold bg-purple-50 sticky top-0"><tr><th className="p-2 pl-3">Material</th><th className="p-2 text-center">Chapas</th><th className="p-2 text-right">M²</th><th className="p-2 text-right pr-3">Venda Total</th></tr></thead>
                         <tbody className="divide-y divide-purple-50">
                             {materialsRanking.high.length === 0 ? <tr><td colSpan="4" className="p-4 text-center text-slate-400">Sem vendas nesta categoria</td></tr> : 
                                 materialsRanking.high.map((m, i) => (
@@ -282,7 +279,6 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
              )}
          </div>
 
-         {/* LISTA DE BAIXO VALOR */}
          <div className="bg-white p-5 rounded-xl shadow-sm border border-orange-200 flex flex-col h-[400px]">
              <div className="flex justify-between items-center mb-4 border-b border-orange-100 pb-2">
                  <h3 className="font-bold text-orange-800 flex items-center gap-2 text-sm"><Layers size={16}/> Baixo Valor (&le; R$300/m²)</h3>
@@ -293,15 +289,7 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
              ) : (
                 <div className="overflow-y-auto custom-scroll flex-grow">
                     <table className="w-full text-xs text-left">
-                        {/* COLUNA CHAPAS ADICIONADA AQUI */}
-                        <thead className="text-orange-400 font-semibold bg-orange-50 sticky top-0">
-                           <tr>
-                              <th className="p-2 pl-3">Material</th>
-                              <th className="p-2 text-center">Chapas</th>
-                              <th className="p-2 text-right">M²</th>
-                              <th className="p-2 text-right pr-3">Venda Total</th>
-                           </tr>
-                        </thead>
+                        <thead className="text-orange-400 font-semibold bg-orange-50 sticky top-0"><tr><th className="p-2 pl-3">Material</th><th className="p-2 text-center">Chapas</th><th className="p-2 text-right">M²</th><th className="p-2 text-right pr-3">Venda Total</th></tr></thead>
                         <tbody className="divide-y divide-orange-50">
                             {materialsRanking.low.length === 0 ? <tr><td colSpan="4" className="p-4 text-center text-slate-400">Sem vendas nesta categoria</td></tr> : 
                                 materialsRanking.low.map((m, i) => (
@@ -329,6 +317,8 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
             <div className="flex justify-between font-bold text-blue-700 border-t border-slate-100 pt-2"><span>(=) Receita Líquida (Pedra)</span><span>{formatBRL(kpis.netRev)}</span></div>
             <div className="flex justify-between text-slate-600 pl-4"><span>(-) Custo Mercadoria (CMV)</span><span className="text-red-500">- {formatBRL(kpis.cmv)}</span></div>
             <div className="flex justify-between text-slate-600 pl-4"><span>(-) Impostos & Comissões</span><span className="text-red-500">- {formatBRL(kpis.taxes + kpis.comms)}</span></div>
+            {/* LINHA DE INADIMPLÊNCIA ADICIONADA */}
+            {kpis.badDebt > 0 && <div className="flex justify-between text-slate-600 pl-4"><span>(-) Inadimplência Estimada</span><span className="text-red-500">- {formatBRL(kpis.badDebt)}</span></div>}
             <div className="flex justify-between text-slate-600 pl-4"><span>(-) Despesas Fixas</span><span className="text-red-500">- {formatBRL(kpis.fixedOps)}</span></div>
             {kpis.varOps > 0 && (<div className="flex justify-between text-slate-600 pl-4"><span>(-) Despesas Variáveis</span><span className="text-red-500">- {formatBRL(kpis.varOps)}</span></div>)}
             <div className={`flex justify-between font-extrabold text-lg pt-3 border-t border-slate-200 mt-2 ${kpis.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}><span>(=) LUCRO LÍQUIDO</span><span>{formatBRL(kpis.profit)}</span></div>
