@@ -1,223 +1,223 @@
 "use client";
 
 import { useState, useMemo, useEffect } from 'react';
-import { TrendingUp, Users, Package, Wallet, ArrowUpRight, ArrowDownRight, DollarSign, Activity, Calendar, ArrowRight, Loader2 } from 'lucide-react';
+import { TrendingUp, Users, Package, Wallet, DollarSign, Activity, Calendar, Loader2, Layers, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import { Bar, Doughnut, Line } from 'react-chartjs-2';
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, BarElement, ArcElement, Title, Tooltip, Legend, Filler } from 'chart.js';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, ArcElement, Title, Tooltip, Legend, Filler);
 
-// Lista estática para evitar erro de Date/Timezone
 const MONTH_NAMES = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 
-// Helper para garantir números seguros (nunca retorna NaN ou null)
-const safeNum = (val) => {
-  const n = Number(val);
-  return isNaN(n) ? 0 : n;
-};
-
 export default function OverviewTab({ summary = [], settings, expenses = [] }) {
-  const [startMonth, setStartMonth] = useState('');
-  const [endMonth, setEndMonth] = useState('');
-  const [isClient, setIsClient] = useState(false);
+  const [selectedMonth, setSelectedMonth] = useState('');
+  const [isMounted, setIsMounted] = useState(false);
 
-  // Garante que só renderiza após o cliente montar (previne erro de hidratação)
-  useEffect(() => { setIsClient(true); }, []);
+  useEffect(() => { setIsMounted(true); }, []);
 
-  // 1. GERAÇÃO SEGURA DA LISTA DE MESES (Sem new Date)
+  // 1. LISTA DE MESES
   const months = useMemo(() => {
     if (!summary || !Array.isArray(summary)) return [];
-    
-    // Filtra dados sujos
-    const cleanData = summary.filter(item => {
-        const y = safeNum(item?.year);
-        const m = safeNum(item?.month);
-        return y > 2000 && m >= 1 && m <= 12;
-    });
-
-    return cleanData
-      .sort((a, b) => (safeNum(b.year) - safeNum(a.year)) || (safeNum(b.month) - safeNum(a.month)))
-      .map(item => {
-        const y = safeNum(item.year);
-        const m = safeNum(item.month);
-        // Usa o array fixo em vez de Date
-        const label = `${MONTH_NAMES[m]} de ${y}`;
-        
-        return {
-            key: `${y}-${m}`,
-            year: y,
-            month: m,
-            value: y * 100 + m,
-            label: label
-        };
-      });
+    return summary
+      .filter(item => item && item.year && item.month)
+      .sort((a, b) => (Number(b.year) - Number(a.year)) || (Number(b.month) - Number(a.month)))
+      .map(item => ({
+        key: `${item.year}-${item.month}`,
+        label: `${MONTH_NAMES[Number(item.month)]} de ${item.year}`,
+        original: item
+      }));
   }, [summary]);
 
-  // Inicializa seleção
   useEffect(() => {
-    if (months.length > 0 && !startMonth) {
-      setStartMonth(months[0].key);
-      setEndMonth(months[0].key);
-    }
-  }, [months, startMonth]);
+    if (months.length > 0 && !selectedMonth) setSelectedMonth(months[0].key);
+  }, [months, selectedMonth]);
 
-  // 2. FILTRO DE PERÍODO
-  const periodData = useMemo(() => {
-    if (!months.length || !startMonth || !endMonth) return [];
+  // 2. DADOS DO MÊS SELECIONADO
+  const currentData = useMemo(() => {
+    if (!summary || !selectedMonth) return null;
+    return summary.find(s => `${s.year}-${s.month}` === selectedMonth);
+  }, [summary, selectedMonth]);
 
-    const startItem = months.find(m => m.key === startMonth);
-    const endItem = months.find(m => m.key === endMonth);
-
-    if (!startItem || !endItem) return [];
-
-    const minVal = Math.min(startItem.value, endItem.value);
-    const maxVal = Math.max(startItem.value, endItem.value);
-
-    // Filtra summary original com segurança
-    return (summary || []).filter(item => {
-      const val = safeNum(item?.year) * 100 + safeNum(item?.month);
-      return val >= minVal && val <= maxVal;
-    }).sort((a, b) => (safeNum(a.year) - safeNum(b.year)) || (safeNum(a.month) - safeNum(b.month)));
-
-  }, [summary, startMonth, endMonth, months]);
-
-
-  // 3. CÁLCULO DE KPIs
+  // 3. CÁLCULO DOS KPIs
   const kpis = useMemo(() => {
-    const def = { grossRev: 0, netRev: 0, profit: 0, margin: 0, m2: 0, avgPrice: 0, cmv: 0, taxes: 0, comms: 0, fixedOps: 0, varOps: 0, freight: 0, monthsCount: 0 };
-    
-    if (!periodData || periodData.length === 0) return def;
+    const def = { grossRev: 0, netRev: 0, profit: 0, margin: 0, m2: 0, avgPrice: 0, cmv: 0, freight: 0, taxes: 0, comms: 0, fixedOps: 0, varOps: 0, m2High: 0, m2Low: 0 };
+    if (!currentData) return def;
 
-    const totals = periodData.reduce((acc, curr) => ({
-      netRev: acc.netRev + safeNum(curr.total_net_revenue),
-      freight: acc.freight + safeNum(curr.total_freight),
-      cmv: acc.cmv + safeNum(curr.total_cost),
-      m2: acc.m2 + safeNum(curr.total_m2)
-    }), { netRev: 0, freight: 0, cmv: 0, m2: 0 });
+    const safeNum = (val) => Number(val) || 0;
+
+    const netRev = safeNum(currentData.total_net_revenue);
+    const freight = safeNum(currentData.total_freight);
+    const cmv = safeNum(currentData.total_cost);
+    const m2 = safeNum(currentData.total_m2);
+    
+    // Dados de Mix (Alto vs Baixo)
+    const m2High = safeNum(currentData.total_m2_high);
+    const m2Low = safeNum(currentData.total_m2_low);
 
     const taxRate = safeNum(settings?.tax_rate);
     const commRate = safeNum(settings?.comm_rate);
 
-    const taxes = totals.netRev * (taxRate / 100);
-    const comms = totals.netRev * (commRate / 100);
+    const taxes = netRev * (taxRate / 100);
+    const comms = netRev * (commRate / 100);
 
-    const monthsCount = periodData.length;
     const safeExpenses = Array.isArray(expenses) ? expenses : [];
-    
-    const monthlyFixedCost = safeExpenses
-        .filter(e => e.type === 'FIXED')
-        .reduce((acc, curr) => acc + safeNum(curr.value), 0);
-    
-    const totalFixedOps = monthlyFixedCost * monthsCount;
+    const fixedOps = safeExpenses.filter(e => e.type === 'FIXED').reduce((acc, curr) => acc + safeNum(curr.value), 0);
+    const varOps = safeExpenses.filter(e => e.type === 'VARIABLE' && e.month_key === selectedMonth).reduce((acc, curr) => acc + safeNum(curr.value), 0);
 
-    const validMonthKeys = new Set(periodData.map(d => `${d.year}-${d.month}`));
-    const totalVarOps = safeExpenses
-        .filter(e => e.type === 'VARIABLE' && validMonthKeys.has(e.month_key))
-        .reduce((acc, curr) => acc + safeNum(curr.value), 0);
+    const grossRev = netRev + freight;
+    const profit = netRev - cmv - taxes - comms - fixedOps - varOps;
+    const margin = netRev > 0 ? (profit / netRev) * 100 : 0;
+    const avgPrice = m2 > 0 ? netRev / m2 : 0;
 
-    const grossRev = totals.netRev + totals.freight;
-    const profit = totals.netRev - totals.cmv - taxes - comms - totalFixedOps - totalVarOps;
-    const margin = totals.netRev > 0 ? (profit / totals.netRev) * 100 : 0;
-    const avgPrice = totals.m2 > 0 ? totals.netRev / totals.m2 : 0;
+    return { grossRev, netRev, profit, margin, m2, avgPrice, cmv, freight, taxes, comms, fixedOps, varOps, m2High, m2Low };
+  }, [currentData, settings, expenses, selectedMonth]);
 
-    return { 
-      grossRev, netRev, profit, margin, m2, avgPrice, 
-      cmv: totals.cmv, taxes, comms, fixedOps: totalFixedOps, varOps: totalVarOps, freight: totals.freight, monthsCount
-    };
-  }, [periodData, settings, expenses]);
-
-
-  // 4. GRÁFICOS
-  const chartDataRaw = useMemo(() => {
-    const safeExpenses = Array.isArray(expenses) ? expenses : [];
-    
-    return {
-      labels: periodData.map(d => `${d.month}/${d.year}`), // Label simples
-      revenues: periodData.map(d => safeNum(d.total_net_revenue) + safeNum(d.total_freight)),
-      profits: periodData.map(d => {
-         const net = safeNum(d.total_net_revenue);
-         const cost = safeNum(d.total_cost);
-         const tax = net * (safeNum(settings?.tax_rate)/100);
-         const comm = net * (safeNum(settings?.comm_rate)/100);
-         const fixed = safeExpenses.filter(e => e.type === 'FIXED').reduce((a,b)=>a+safeNum(b.value),0);
-         const variable = safeExpenses
-            .filter(e => e.type === 'VARIABLE' && e.month_key === `${d.year}-${d.month}`)
-            .reduce((a,b)=>a+safeNum(b.value),0);
-            
-         return net - cost - tax - comm - fixed - variable;
-      })
-    };
-  }, [periodData, settings, expenses]);
-
-  const chartData = {
-    labels: chartDataRaw.labels,
-    datasets: [
-      { label: 'Faturamento Bruto', data: chartDataRaw.revenues, borderColor: '#3b82f6', backgroundColor: 'rgba(59, 130, 246, 0.1)', fill: true, tension: 0.4 },
-      { label: 'Lucro Líquido', data: chartDataRaw.profits, borderColor: '#22c55e', backgroundColor: 'rgba(34, 197, 94, 0.1)', fill: true, tension: 0.4 }
-    ]
+  // Dados para o Gráfico de Rosca (Mix)
+  const mixChartData = {
+    labels: ['Alto Valor (>R$300/m²)', 'Baixo Valor'],
+    datasets: [{
+      data: [kpis.m2High, kpis.m2Low],
+      backgroundColor: ['#8b5cf6', '#f97316'], // Roxo (Alto), Laranja (Baixo)
+      borderWidth: 0
+    }]
   };
 
-  const chartOptions = { responsive: true, interaction: { mode: 'index', intersect: false }, scales: { y: { type: 'linear', beginAtZero: true }, x: { grid: { display: false } } }, plugins: { legend: { position: 'top' } } };
+  const chartData = useMemo(() => {
+    const safeExpenses = Array.isArray(expenses) ? expenses : [];
+    const sortedHistory = (summary || [])
+        .filter(item => item && item.year && item.month)
+        .sort((a, b) => (Number(a.year) - Number(b.year)) || (Number(a.month) - Number(b.month)));
 
-  const formatBRL = (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(safeNum(val));
-  const formatNum = (val) => new Intl.NumberFormat('pt-BR').format(safeNum(val));
+    const labels = sortedHistory.map(d => `${d.month}/${d.year}`);
+    const revenues = sortedHistory.map(d => (Number(d.total_net_revenue)||0) + (Number(d.total_freight)||0));
+    const profits = sortedHistory.map(d => {
+        const net = Number(d.total_net_revenue)||0;
+        const cost = Number(d.total_cost)||0;
+        const tax = net * ((Number(settings?.tax_rate)||0)/100);
+        const comm = net * ((Number(settings?.comm_rate)||0)/100);
+        const fixed = safeExpenses.filter(e => e.type === 'FIXED').reduce((acc, curr) => acc + (Number(curr.value)||0), 0);
+        const variable = safeExpenses.filter(e => e.type === 'VARIABLE' && e.month_key === `${d.year}-${d.month}`).reduce((acc, curr) => acc + (Number(curr.value)||0), 0);
+        return net - cost - tax - comm - fixed - variable;
+    });
 
-  // RENDERIZAÇÃO SEGURA
-  if (!isClient) return <div className="p-10 flex justify-center"><Loader2 className="animate-spin text-slate-400" /></div>;
-  
-  if (months.length === 0) {
-    return (
-        <div className="p-10 text-center text-slate-400 border border-dashed border-slate-300 rounded-xl">
-            <p>Nenhum dado financeiro processado.</p>
-            <p className="text-xs mt-2">Faça o upload de uma planilha na aba "Dados".</p>
-        </div>
-    );
-  }
+    return {
+      labels,
+      datasets: [
+        { label: 'Fat. Bruto', data: revenues, borderColor: '#3b82f6', backgroundColor: 'rgba(59, 130, 246, 0.1)', fill: true, tension: 0.3 },
+        { label: 'Lucro Líq.', data: profits, borderColor: '#22c55e', backgroundColor: 'rgba(34, 197, 94, 0.1)', fill: true, tension: 0.3 }
+      ]
+    };
+  }, [summary, settings, expenses]);
+
+  const chartOptions = { responsive: true, interaction: { mode: 'index', intersect: false }, scales: { y: { beginAtZero: true, grid: { color: '#f1f5f9' } }, x: { grid: { display: false } } }, plugins: { legend: { display: false } } };
+  const formatBRL = (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
+  const formatNum = (val) => new Intl.NumberFormat('pt-BR').format(val || 0);
+  const formatPct = (val) => `${(val || 0).toFixed(1)}%`;
+
+  if (!isMounted) return <div className="p-20 flex justify-center"><Loader2 className="animate-spin text-slate-300" /></div>;
+  if (months.length === 0) return <div className="p-10 text-center text-slate-400 border-2 border-dashed border-slate-200 rounded-xl">Nenhum dado financeiro. Faça upload da planilha.</div>;
 
   return (
     <div className="space-y-6 fade-in pb-10">
       
-      {/* SELETOR */}
-      <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 flex flex-col md:flex-row justify-between items-center gap-4">
+      {/* HEADER */}
+      <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 flex justify-between items-center">
          <div>
             <h2 className="text-xl font-bold text-slate-800">Visão Geral</h2>
-            <p className="text-xs text-slate-500">
-               {kpis.monthsCount > 1 ? `Análise acumulada de ${kpis.monthsCount} meses` : 'Análise mensal detalhada'}
-            </p>
+            <p className="text-xs text-slate-500">Indicadores do mês selecionado</p>
          </div>
-         <div className="flex items-center gap-2 bg-slate-50 p-2 rounded-lg border border-slate-200">
-            <div className="flex items-center gap-2"><Calendar size={14} className="text-slate-500"/><span className="text-xs font-bold text-slate-500 uppercase">De:</span><select value={startMonth} onChange={(e) => setStartMonth(e.target.value)} className="bg-transparent border-none text-sm font-bold text-slate-700 py-0 pl-1 pr-6 focus:ring-0 cursor-pointer">{months.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}</select></div>
-            <ArrowRight size={14} className="text-slate-400"/>
-            <div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-500 uppercase">Até:</span><select value={endMonth} onChange={(e) => setEndMonth(e.target.value)} className="bg-transparent border-none text-sm font-bold text-slate-700 py-0 pl-1 pr-6 focus:ring-0 cursor-pointer">{months.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}</select></div>
+         <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200">
+            <Calendar size={16} className="text-slate-500"/>
+            <select value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)} className="bg-transparent border-none text-sm font-bold text-slate-700 focus:ring-0 cursor-pointer py-0">
+               {months.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
+            </select>
          </div>
       </div>
       
-      {/* CARDS */}
+      {/* KPIS */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200"><div className="flex justify-between items-start"><div><p className="text-xs font-bold text-slate-500 uppercase">Faturamento Bruto</p><h3 className="text-2xl font-extrabold text-slate-800 mt-1">{formatBRL(kpis.grossRev)}</h3><div className="mt-2 flex items-center gap-1 text-[10px] text-slate-400"><span className="bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded font-bold">Nota Fiscal</span><span>(Pedra + Frete)</span></div></div><div className="p-2 bg-blue-50 rounded-lg text-blue-600"><DollarSign size={20} /></div></div></div>
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200"><div className="flex justify-between items-start"><div><p className="text-xs font-bold text-slate-500 uppercase">Lucro Líquido</p><h3 className={`text-2xl font-extrabold mt-1 ${kpis.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatBRL(kpis.profit)}</h3><div className="mt-2 flex items-center gap-1 text-[10px] text-slate-400"><span className={`${kpis.profit>=0 ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'} px-1.5 py-0.5 rounded font-bold`}>{kpis.margin.toFixed(1)}%</span><span>Margem Real</span></div></div><div className={`p-2 rounded-lg ${kpis.profit>=0 ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'}`}><Wallet size={20} /></div></div></div>
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200"><div className="flex justify-between items-start"><div><p className="text-xs font-bold text-slate-500 uppercase">Volume Total</p><h3 className="text-2xl font-extrabold text-slate-800 mt-1">{formatNum(kpis.m2)} <span className="text-sm font-normal text-slate-500">m²</span></h3><p className="mt-2 text-[10px] text-slate-400">Serrado no período</p></div><div className="p-2 bg-purple-50 rounded-lg text-purple-600"><Package size={20} /></div></div></div>
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200"><div className="flex justify-between items-start"><div><p className="text-xs font-bold text-slate-500 uppercase">Preço Médio</p><h3 className="text-2xl font-extrabold text-slate-800 mt-1">{formatBRL(kpis.avgPrice)}</h3><div className="mt-2 flex items-center gap-1 text-[10px] text-slate-400"><span className="bg-orange-50 text-orange-700 px-1.5 py-0.5 rounded font-bold">Por m²</span><span>(Venda Líquida)</span></div></div><div className="p-2 bg-orange-50 rounded-lg text-orange-600"><Activity size={20} /></div></div></div>
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+          <p className="text-xs font-bold text-slate-500 uppercase">Faturamento Bruto</p>
+          <h3 className="text-2xl font-extrabold text-slate-800 mt-1">{formatBRL(kpis.grossRev)}</h3>
+          <div className="mt-2 text-[10px] text-slate-400 bg-blue-50 text-blue-700 px-2 py-1 rounded w-fit font-bold">Nota Fiscal (Pedra + Frete)</div>
+        </div>
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+          <p className="text-xs font-bold text-slate-500 uppercase">Lucro Líquido</p>
+          <h3 className={`text-2xl font-extrabold mt-1 ${kpis.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatBRL(kpis.profit)}</h3>
+          <div className="mt-2 text-[10px] text-slate-400 flex items-center gap-2"><span className={`${kpis.profit >= 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'} px-2 py-1 rounded font-bold`}>{kpis.margin.toFixed(1)}%</span><span>Margem Real</span></div>
+        </div>
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+          <p className="text-xs font-bold text-slate-500 uppercase">Volume Vendido</p>
+          <h3 className="text-2xl font-extrabold text-slate-800 mt-1">{formatNum(kpis.m2)} <span className="text-sm font-normal text-slate-500">m²</span></h3>
+          <p className="mt-2 text-[10px] text-slate-400">Total Serrado</p>
+        </div>
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+          <p className="text-xs font-bold text-slate-500 uppercase">Preço Médio</p>
+          <h3 className="text-2xl font-extrabold text-slate-800 mt-1">{formatBRL(kpis.avgPrice)}</h3>
+          <div className="mt-2 text-[10px] text-slate-400 bg-orange-50 text-orange-700 px-2 py-1 rounded w-fit font-bold">Por m² (Pedra)</div>
+        </div>
       </div>
 
-      {/* GRÁFICO */}
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <h3 className="font-bold text-slate-700 mb-6 flex items-center gap-2"><TrendingUp size={20} className="text-cyan-600"/> Evolução no Período</h3>
-        {periodData.length > 0 ? (<div className="h-80 w-full"><Line data={chartData} options={chartOptions} /></div>) : (<div className="h-40 flex items-center justify-center text-slate-400">Nenhum dado selecionado.</div>)}
+      {/* --- NOVA SEÇÃO: MIX DE PRODUTOS (ALTO vs BAIXO VALOR) --- */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {/* GRÁFICO HISTÓRICO */}
+        <div className="md:col-span-2 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+            <h3 className="font-bold text-slate-700 mb-6 flex items-center gap-2"><TrendingUp size={20} className="text-cyan-600"/> Histórico Financeiro</h3>
+            <div className="h-64 w-full"><Line data={chartData} options={chartOptions} /></div>
+        </div>
+
+        {/* TABELA DE MIX (ALTO vs BAIXO) */}
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col">
+            <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><Layers size={20} className="text-purple-600"/> Mix de Vendas</h3>
+            <div className="flex-grow flex flex-col justify-center items-center">
+                <div className="h-40 w-40 relative mb-4">
+                     <Doughnut data={mixChartData} options={{ cutout: '70%', plugins: { legend: { display: false } } }} />
+                     <div className="absolute inset-0 flex items-center justify-center flex-col">
+                        <span className="text-xs text-slate-400 font-bold uppercase">Total</span>
+                        <span className="text-lg font-bold text-slate-800">{formatNum(kpis.m2)}</span>
+                     </div>
+                </div>
+                
+                {/* Tabela de Ranking Compacta */}
+                <div className="w-full">
+                    <div className="flex justify-between items-center text-xs mb-2 p-2 bg-purple-50 rounded border border-purple-100">
+                        <div className="flex items-center gap-2">
+                            <div className="w-3 h-3 rounded-full bg-purple-500"></div>
+                            <span className="font-bold text-purple-900">Alto Valor (>300)</span>
+                        </div>
+                        <div className="text-right">
+                            <div className="font-bold text-purple-700">{formatNum(kpis.m2High)} m²</div>
+                            <div className="text-[10px] text-purple-500">{kpis.m2 > 0 ? formatPct((kpis.m2High/kpis.m2)*100) : '0%'}</div>
+                        </div>
+                    </div>
+
+                    <div className="flex justify-between items-center text-xs p-2 bg-orange-50 rounded border border-orange-100">
+                        <div className="flex items-center gap-2">
+                            <div className="w-3 h-3 rounded-full bg-orange-500"></div>
+                            <span className="font-bold text-orange-900">Baixo Valor</span>
+                        </div>
+                        <div className="text-right">
+                            <div className="font-bold text-orange-700">{formatNum(kpis.m2Low)} m²</div>
+                            <div className="text-[10px] text-orange-500">{kpis.m2 > 0 ? formatPct((kpis.m2Low/kpis.m2)*100) : '0%'}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
       </div>
 
-      {/* DRE */}
+      {/* DRE SIMPLIFICADO */}
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <h3 className="font-bold text-slate-700 mb-4 text-sm uppercase border-b border-slate-100 pb-2">Resumo Operacional (Acumulado)</h3>
+        <h3 className="font-bold text-slate-700 mb-4 text-sm uppercase border-b border-slate-100 pb-2">Resumo Operacional ({months.find(m => m.key === selectedMonth)?.label})</h3>
         <div className="space-y-3 text-sm">
-            <div className="flex justify-between font-bold text-slate-800"><span>(+) Faturamento Bruto (Nota)</span><span>{formatBRL(kpis.grossRev)}</span></div>
+            <div className="flex justify-between font-bold text-slate-800"><span>(+) Total Nota Fiscal</span><span>{formatBRL(kpis.grossRev)}</span></div>
             <div className="flex justify-between text-slate-500 text-xs pl-4"><span>(-) Fretes (Repasse)</span><span className="text-red-400">- {formatBRL(kpis.freight)}</span></div>
             <div className="flex justify-between font-bold text-blue-700 border-t border-slate-100 pt-2"><span>(=) Receita Líquida (Pedra)</span><span>{formatBRL(kpis.netRev)}</span></div>
             <div className="flex justify-between text-slate-600 pl-4"><span>(-) Custo Mercadoria (CMV)</span><span className="text-red-500">- {formatBRL(kpis.cmv)}</span></div>
             <div className="flex justify-between text-slate-600 pl-4"><span>(-) Impostos & Comissões</span><span className="text-red-500">- {formatBRL(kpis.taxes + kpis.comms)}</span></div>
-            <div className="flex justify-between text-slate-600 pl-4"><span>(-) Despesas Fixas (Recorrentes x {kpis.monthsCount})</span><span className="text-red-500">- {formatBRL(kpis.fixedOps)}</span></div>
-            {kpis.varOps > 0 && (<div className="flex justify-between text-slate-600 pl-4"><span>(-) Despesas Variáveis (Lançadas)</span><span className="text-red-500">- {formatBRL(kpis.varOps)}</span></div>)}
-            <div className={`flex justify-between font-extrabold text-lg pt-3 border-t border-slate-200 mt-2 ${kpis.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}><span>(=) LUCRO LÍQUIDO ACUMULADO</span><span>{formatBRL(kpis.profit)}</span></div>
+            <div className="flex justify-between text-slate-600 pl-4"><span>(-) Despesas Fixas</span><span className="text-red-500">- {formatBRL(kpis.fixedOps)}</span></div>
+            {kpis.varOps > 0 && (<div className="flex justify-between text-slate-600 pl-4"><span>(-) Despesas Variáveis</span><span className="text-red-500">- {formatBRL(kpis.varOps)}</span></div>)}
+            <div className={`flex justify-between font-extrabold text-lg pt-3 border-t border-slate-200 mt-2 ${kpis.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}><span>(=) LUCRO LÍQUIDO</span><span>{formatBRL(kpis.profit)}</span></div>
         </div>
       </div>
     </div>
