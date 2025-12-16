@@ -158,7 +158,7 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
         </div>
       </div>
 
-      {/* --- NOVA SEÇÃO: MIX DE PRODUTOS (ALTO vs BAIXO VALOR) --- */}
+      {/* --- SEÇÃO: MIX DE PRODUTOS --- */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* GRÁFICO HISTÓRICO */}
         <div className="md:col-span-2 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
@@ -166,7 +166,7 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
             <div className="h-64 w-full"><Line data={chartData} options={chartOptions} /></div>
         </div>
 
-        {/* TABELA DE MIX (ALTO vs BAIXO) */}
+        {/* TABELA DE MIX (CORRIGIDO: &gt; em vez de >) */}
         <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col">
             <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><Layers size={20} className="text-purple-600"/> Mix de Vendas</h3>
             <div className="flex-grow flex flex-col justify-center items-center">
@@ -178,12 +178,12 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
                      </div>
                 </div>
                 
-                {/* Tabela de Ranking Compacta */}
                 <div className="w-full">
                     <div className="flex justify-between items-center text-xs mb-2 p-2 bg-purple-50 rounded border border-purple-100">
                         <div className="flex items-center gap-2">
                             <div className="w-3 h-3 rounded-full bg-purple-500"></div>
-                            <span className="font-bold text-purple-900">Alto Valor (>300)</span>
+                            {/* CORREÇÃO AQUI: &gt;300 */}
+                            <span className="font-bold text-purple-900">Alto Valor (&gt;300)</span>
                         </div>
                         <div className="text-right">
                             <div className="font-bold text-purple-700">{formatNum(kpis.m2High)} m²</div>
