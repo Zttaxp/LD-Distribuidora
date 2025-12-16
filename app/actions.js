@@ -2,6 +2,7 @@
 
 import { createClient } from '@/utils/supabase/server';
 import { revalidatePath } from 'next/cache';
+import * as XLSX from 'xlsx';
 
 // --- CONFIGURAÇÕES GERAIS ---
 export async function updateSettings(settings) {
@@ -183,4 +184,93 @@ export async function getMonthlySalesData(month, year) {
   }
   
   return data || [];
+}
+
+export async function processUpload(formData) {
+  const supabase = await createClient();
+  const file = formData.get('file');
+
+  if (!file) return { success: false, message: 'Nenhum arquivo enviado.' };
+
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    const workbook = XLSX.read(buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(sheet);
+
+    if (rows.length === 0) return { success: false, message: 'Planilha vazia.' };
+
+    const formattedData = rows.map(row => {
+      // 1. Tratamento de Data Robusto
+      let dateObj = new Date();
+      
+      // Se vier como número serial do Excel (ex: 45260)
+      if (typeof row.Data === 'number') {
+        dateObj = new Date(Math.round((row.Data - 25569) * 86400 * 1000));
+      } 
+      // Se vier como string (ex: "01/12/2025" ou "2025-12-01")
+      else if (typeof row.Data === 'string') {
+        if (row.Data.includes('/')) {
+            const [d, m, y] = row.Data.split('/');
+            dateObj = new Date(`${y}-${m}-${d}`);
+        } else {
+            dateObj = new Date(row.Data);
+        }
+      }
+
+      // Verifica se a data é válida, se não, usa hoje (fallback de segurança)
+      if (isNaN(dateObj.getTime())) { 
+          dateObj = new Date(); 
+      }
+
+      // 2. Extração Explícita de Mês/Ano (O SEGREDO PARA OS FILTROS FUNCIONAREM)
+      // getMonth() retorna 0-11, então somamos 1
+      const month = dateObj.getMonth() + 1; 
+      const year = dateObj.getFullYear();
+      const monthKey = `${year}-${month}`;
+
+      // 3. Tratamento de Valores Numéricos
+      // Remove "R$", troca vírgula por ponto, etc.
+      const cleanNum = (val) => {
+          if (typeof val === 'number') return val;
+          if (typeof val === 'string') return parseFloat(val.replace('R$', '').replace(/\./g, '').replace(',', '.').trim()) || 0;
+          return 0;
+      };
+
+      const revenue = cleanNum(row.PrecoUnit || row.Valor || 0);
+      const freight = cleanNum(row.Frete || 0); // Ajuste conforme nome da coluna no seu Excel
+      const cost = cleanNum(row.Custo || 0);    // Ajuste conforme nome da coluna
+
+      return {
+        date: dateObj.toISOString(),
+        client: (row.Cliente || 'Consumidor Final').toUpperCase(),
+        seller: (row.Vendedor || 'Loja').toUpperCase(),
+        material: (row.Material || 'Diversos').toUpperCase(),
+        chapa: row.Chapa ? String(row.Chapa) : null,
+        m2_total: cleanNum(row.M2 || row.Metragem || 0),
+        revenue: revenue,
+        freight: freight,
+        cost: cost,
+        
+        // CAMPOS CRÍTICOS PARA OS FILTROS:
+        month: month, 
+        year: year,
+        month_key: monthKey
+      };
+    });
+
+    // Inserção no Banco
+    const { error } = await supabase.from('sales').insert(formattedData);
+
+    if (error) throw error;
+
+    revalidatePath('/');
+    return { success: true, count: formattedData.length };
+
+  } catch (error) {
+    console.error('Erro no upload:', error);
+    return { success: false, message: 'Erro ao processar planilha: ' + error.message };
+  }
 }
