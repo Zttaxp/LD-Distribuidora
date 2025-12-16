@@ -162,65 +162,20 @@ export async function getSellerDetails(seller, month, year) {
   };
 }
 
-export async function getTopMaterials(month, year) {
+export async function getMonthlySalesData(monthKey) {
   const supabase = createServerActionClient({ cookies });
-
-  // CONSTRUÇÃO SEGURA DAS DATAS (Universal)
-  // Data Inicial: Dia 01 do mês à meia-noite
-  const startDate = `${year}-${String(month).padStart(2, '0')}-01T00:00:00.000Z`;
   
-  // Data Final: Dia 01 do mês seguinte (para pegar até o último milissegundo do mês atual)
-  let nextMonth = Number(month) + 1;
-  let nextYear = Number(year);
-  if (nextMonth > 12) {
-      nextMonth = 1;
-      nextYear = nextYear + 1;
-  }
-  const endDate = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01T00:00:00.000Z`;
-
-  // Log para você ver no terminal do VS Code se está chegando os dados
-  console.log(`🔍 Buscando Mix de Materiais: ${month}/${year} (Range: ${startDate} até ${endDate})`);
-
-  // QUERY: Usa .gte (maior ou igual) e .lt (menor que) na coluna 'date'
+  // Apenas busca as vendas do mês (sem filtros complexos)
+  // monthKey é algo como "2025-12"
   const { data, error } = await supabase
     .from('sales')
-    .select('material, m2_total, revenue')
-    .gte('date', startDate)
-    .lt('date', endDate);
+    .select('material, m2_total, revenue, freight')
+    .eq('month_key', monthKey);
 
   if (error) {
-    console.error("❌ Erro Supabase:", error);
-    return { high: [], low: [] };
+    console.error("Erro ao buscar vendas:", error);
+    return [];
   }
-
-  if (!data || data.length === 0) {
-    console.warn("⚠️ Nenhum item de venda encontrado neste intervalo.");
-    return { high: [], low: [] };
-  }
-
-  // LÓGICA DE AGRUPAMENTO (Mantida)
-  const grouped = data.reduce((acc, curr) => {
-    // Normaliza nome (remove espaços extras e deixa maiúsculo)
-    const mat = (curr.material || 'INDEFINIDO').trim().toUpperCase();
-    
-    if (!acc[mat]) acc[mat] = { name: mat, m2: 0, revenue: 0 };
-    
-    // Converte para número para evitar erro de soma
-    acc[mat].m2 += Number(curr.m2_total || 0);
-    acc[mat].revenue += Number(curr.revenue || 0);
-    return acc;
-  }, {});
-
-  const list = Object.values(grouped).map(item => ({
-    ...item,
-    price: item.m2 > 0 ? item.revenue / item.m2 : 0
-  }));
-
-  // Filtra e Ordena
-  const high = list.filter(i => i.price > 300).sort((a, b) => b.revenue - a.revenue);
-  const low = list.filter(i => i.price <= 300).sort((a, b) => b.revenue - a.revenue);
-
-  console.log(`✅ Sucesso: ${high.length} itens Alto Valor, ${low.length} itens Baixo Valor.`);
-
-  return { high, low };
+  
+  return data || [];
 }
