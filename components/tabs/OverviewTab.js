@@ -7,30 +7,54 @@ import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, ArcElement, Title, Tooltip, Legend, Filler);
 
-// Proteção nos props: summary e expenses recebem [] se vierem nulos
 export default function OverviewTab({ summary = [], settings, expenses = [] }) {
   const [startMonth, setStartMonth] = useState('');
   const [endMonth, setEndMonth] = useState('');
+  const [isClient, setIsClient] = useState(false);
 
-  // 1. Gera as opções de meses disponíveis (Cronológico)
+  // Evita erro de hidratação (renderiza apenas no cliente)
+  useEffect(() => { setIsClient(true); }, []);
+
+  // 1. GERAÇÃO SEGURA DA LISTA DE MESES
   const months = useMemo(() => {
     if (!summary || !Array.isArray(summary)) return [];
     
-    // Filtra itens inválidos e ordena
-    const validItems = summary.filter(item => item && item.year && item.month);
+    // Filtra apenas itens que tenham Ano e Mês válidos
+    const validItems = summary.filter(item => {
+        const y = Number(item?.year);
+        const m = Number(item?.month);
+        return !isNaN(y) && !isNaN(m) && y > 2000 && m >= 1 && m <= 12;
+    });
     
     return validItems
-      .sort((a, b) => (b.year - a.year) || (b.month - a.month))
-      .map(item => ({
-        key: `${item.year}-${item.month}`,
-        year: Number(item.year),
-        month: Number(item.month),
-        value: Number(item.year) * 100 + Number(item.month),
-        label: new Date(item.year, item.month - 1, 1).toLocaleString('pt-BR', { month: 'long', year: 'numeric' })
-      }));
+      .sort((a, b) => (Number(b.year) - Number(a.year)) || (Number(b.month) - Number(a.month)))
+      .map(item => {
+        try {
+            // Tenta criar a data com segurança
+            const y = Number(item.year);
+            const m = Number(item.month);
+            const date = new Date(y, m - 1, 1);
+            
+            // Se der data inválida, retorna um texto genérico
+            const label = !isNaN(date.getTime()) 
+                ? date.toLocaleString('pt-BR', { month: 'long', year: 'numeric' })
+                : `${m}/${y}`;
+
+            return {
+                key: `${y}-${m}`,
+                year: y,
+                month: m,
+                value: y * 100 + m,
+                label: label
+            };
+        } catch (e) {
+            return null;
+        }
+      })
+      .filter(item => item !== null); // Remove qualquer item que tenha dado erro
   }, [summary]);
 
-  // Inicializa com o mês mais recente
+  // Inicializa seleção
   useEffect(() => {
     if (months.length > 0 && !startMonth) {
       setStartMonth(months[0].key);
@@ -38,7 +62,7 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
     }
   }, [months, startMonth]);
 
-  // 2. Filtra os dados baseados no intervalo selecionado
+  // 2. FILTRO DE PERÍODO SEGURO
   const periodData = useMemo(() => {
     if (!months || months.length === 0 || !startMonth || !endMonth) return [];
 
@@ -52,21 +76,23 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
 
     // Filtra summary original com segurança
     return (summary || []).filter(item => {
-      const itemVal = Number(item.year) * 100 + Number(item.month);
+      const y = Number(item?.year);
+      const m = Number(item?.month);
+      if (isNaN(y) || isNaN(m)) return false;
+
+      const itemVal = y * 100 + m;
       return itemVal >= minVal && itemVal <= maxVal;
-    }).sort((a, b) => (a.year - b.year) || (a.month - b.month));
+    }).sort((a, b) => (Number(a.year) - Number(b.year)) || (Number(a.month) - Number(b.month)));
 
   }, [summary, startMonth, endMonth, months]);
 
 
-  // --- CÁLCULO DOS KPIs (AGREGADO) ---
+  // 3. CÁLCULO DE KPIs (Com verificação de nulidade)
   const kpis = useMemo(() => {
-    // Valores padrão zerados
     const def = { grossRev: 0, netRev: 0, profit: 0, margin: 0, m2: 0, avgPrice: 0, cmv: 0, taxes: 0, comms: 0, fixedOps: 0, varOps: 0, freight: 0, monthsCount: 0 };
     
     if (!periodData || periodData.length === 0) return def;
 
-    // 1. Somatórios
     const totals = periodData.reduce((acc, curr) => ({
       netRev: acc.netRev + Number(curr.total_net_revenue || 0),
       freight: acc.freight + Number(curr.total_freight || 0),
@@ -77,13 +103,11 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
     const taxRate = Number(settings?.tax_rate || 0);
     const commRate = Number(settings?.comm_rate || 0);
 
-    // 2. Deduções Variáveis
     const taxes = totals.netRev * (taxRate / 100);
     const comms = totals.netRev * (commRate / 100);
 
-    // 3. Despesas Fixas (Multiplicadas pelo nº de meses)
     const monthsCount = periodData.length;
-    const safeExpenses = Array.isArray(expenses) ? expenses : []; // Proteção
+    const safeExpenses = Array.isArray(expenses) ? expenses : [];
     
     const monthlyFixedCost = safeExpenses
         .filter(e => e.type === 'FIXED')
@@ -91,13 +115,11 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
     
     const totalFixedOps = monthlyFixedCost * monthsCount;
 
-    // 4. Despesas Variáveis
     const validMonthKeys = new Set(periodData.map(d => `${d.year}-${d.month}`));
     const totalVarOps = safeExpenses
         .filter(e => e.type === 'VARIABLE' && validMonthKeys.has(e.month_key))
         .reduce((acc, curr) => acc + Number(curr.value || 0), 0);
 
-    // FÓRMULAS
     const grossRev = totals.netRev + totals.freight;
     const profit = totals.netRev - totals.cmv - taxes - comms - totalFixedOps - totalVarOps;
     const margin = totals.netRev > 0 ? (profit / totals.netRev) * 100 : 0;
@@ -105,17 +127,12 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
 
     return { 
       grossRev, netRev, profit, margin, m2, avgPrice, 
-      cmv: totals.cmv, 
-      taxes, comms, 
-      fixedOps: totalFixedOps, 
-      varOps: totalVarOps,
-      freight: totals.freight,
-      monthsCount
+      cmv: totals.cmv, taxes, comms, fixedOps: totalFixedOps, varOps: totalVarOps, freight: totals.freight, monthsCount
     };
   }, [periodData, settings, expenses]);
 
 
-  // --- GRÁFICOS ---
+  // 4. GRÁFICOS SEGUROS
   const chartDataRaw = useMemo(() => {
     const safeExpenses = Array.isArray(expenses) ? expenses : [];
     
@@ -140,43 +157,25 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
   const chartData = {
     labels: chartDataRaw.labels,
     datasets: [
-      {
-        label: 'Faturamento Bruto',
-        data: chartDataRaw.revenues,
-        borderColor: '#3b82f6',
-        backgroundColor: 'rgba(59, 130, 246, 0.1)',
-        fill: true,
-        tension: 0.4,
-        yAxisID: 'y'
-      },
-      {
-        label: 'Lucro Líquido',
-        data: chartDataRaw.profits,
-        borderColor: '#22c55e',
-        backgroundColor: 'rgba(34, 197, 94, 0.1)',
-        fill: true,
-        tension: 0.4,
-        yAxisID: 'y'
-      }
+      { label: 'Faturamento Bruto', data: chartDataRaw.revenues, borderColor: '#3b82f6', backgroundColor: 'rgba(59, 130, 246, 0.1)', fill: true, tension: 0.4, yAxisID: 'y' },
+      { label: 'Lucro Líquido', data: chartDataRaw.profits, borderColor: '#22c55e', backgroundColor: 'rgba(34, 197, 94, 0.1)', fill: true, tension: 0.4, yAxisID: 'y' }
     ]
   };
 
   const chartOptions = {
     responsive: true,
     interaction: { mode: 'index', intersect: false },
-    scales: {
-      y: { type: 'linear', display: true, position: 'left', grid: { color: '#f1f5f9' } },
-      x: { grid: { display: false } }
-    },
+    scales: { y: { type: 'linear', display: true, position: 'left', grid: { color: '#f1f5f9' } }, x: { grid: { display: false } } },
     plugins: { legend: { position: 'top' } }
   };
 
-  const formatBRL = (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
-  const formatNum = (val) => new Intl.NumberFormat('pt-BR').format(val || 0);
+  const formatBRL = (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(isNaN(val) ? 0 : val);
+  const formatNum = (val) => new Intl.NumberFormat('pt-BR').format(isNaN(val) ? 0 : val);
 
-  // Renderização Segura
-  if (months.length === 0 && summary.length > 0) return <div className="p-10 flex justify-center text-slate-400"><Loader2 className="animate-spin" /></div>;
-  if (months.length === 0) return <div className="p-10 text-center text-slate-400">Nenhum dado financeiro disponível. Faça upload de uma planilha.</div>;
+  // PREVENÇÃO DE CRASH NA RENDERIZAÇÃO
+  if (!isClient) return <div className="p-10 flex justify-center"><Loader2 className="animate-spin text-slate-400" /></div>;
+  if (!summary || summary.length === 0) return <div className="p-10 text-center text-slate-400">Nenhum dado financeiro disponível.</div>;
+  if (months.length === 0) return <div className="p-10 text-center text-slate-400">Dados inválidos encontrados. Verifique a planilha.</div>;
 
   return (
     <div className="space-y-6 fade-in pb-10">
@@ -186,9 +185,7 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
          <div>
             <h2 className="text-xl font-bold text-slate-800">Visão Geral</h2>
             <p className="text-xs text-slate-500">
-               {kpis.monthsCount > 1 
-                  ? `Análise acumulada de ${kpis.monthsCount} meses` 
-                  : 'Análise mensal detalhada'}
+               {kpis.monthsCount > 1 ? `Análise acumulada de ${kpis.monthsCount} meses` : 'Análise mensal detalhada'}
             </p>
          </div>
          
@@ -196,72 +193,46 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
             <div className="flex items-center gap-2">
                <Calendar size={14} className="text-slate-500"/>
                <span className="text-xs font-bold text-slate-500 uppercase">De:</span>
-               <select 
-                  value={startMonth} 
-                  onChange={(e) => setStartMonth(e.target.value)} 
-                  className="bg-transparent border-none text-sm font-bold text-slate-700 py-0 pl-1 pr-6 focus:ring-0 cursor-pointer"
-               >
+               <select value={startMonth} onChange={(e) => setStartMonth(e.target.value)} className="bg-transparent border-none text-sm font-bold text-slate-700 py-0 pl-1 pr-6 focus:ring-0 cursor-pointer">
                   {months.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
                </select>
             </div>
-            
             <ArrowRight size={14} className="text-slate-400"/>
-            
             <div className="flex items-center gap-2">
                <span className="text-xs font-bold text-slate-500 uppercase">Até:</span>
-               <select 
-                  value={endMonth} 
-                  onChange={(e) => setEndMonth(e.target.value)} 
-                  className="bg-transparent border-none text-sm font-bold text-slate-700 py-0 pl-1 pr-6 focus:ring-0 cursor-pointer"
-               >
+               <select value={endMonth} onChange={(e) => setEndMonth(e.target.value)} className="bg-transparent border-none text-sm font-bold text-slate-700 py-0 pl-1 pr-6 focus:ring-0 cursor-pointer">
                   {months.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
                </select>
             </div>
          </div>
       </div>
       
-      {/* KPI CARDS */}
+      {/* CARDS */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
           <div className="flex justify-between items-start">
-            <div>
-              <p className="text-xs font-bold text-slate-500 uppercase">Faturamento Bruto</p>
-              <h3 className="text-2xl font-extrabold text-slate-800 mt-1">{formatBRL(kpis.grossRev)}</h3>
-              <div className="mt-2 flex items-center gap-1 text-[10px] text-slate-400"><span className="bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded font-bold">Nota Fiscal</span><span>(Pedra + Frete)</span></div>
-            </div>
+            <div><p className="text-xs font-bold text-slate-500 uppercase">Faturamento Bruto</p><h3 className="text-2xl font-extrabold text-slate-800 mt-1">{formatBRL(kpis.grossRev)}</h3><div className="mt-2 flex items-center gap-1 text-[10px] text-slate-400"><span className="bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded font-bold">Nota Fiscal</span><span>(Pedra + Frete)</span></div></div>
             <div className="p-2 bg-blue-50 rounded-lg text-blue-600"><DollarSign size={20} /></div>
           </div>
         </div>
 
         <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
           <div className="flex justify-between items-start">
-            <div>
-              <p className="text-xs font-bold text-slate-500 uppercase">Lucro Líquido</p>
-              <h3 className={`text-2xl font-extrabold mt-1 ${kpis.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatBRL(kpis.profit)}</h3>
-              <div className="mt-2 flex items-center gap-1 text-[10px] text-slate-400"><span className={`${kpis.profit>=0 ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'} px-1.5 py-0.5 rounded font-bold`}>{kpis.margin.toFixed(1)}%</span><span>Margem Real</span></div>
-            </div>
+            <div><p className="text-xs font-bold text-slate-500 uppercase">Lucro Líquido</p><h3 className={`text-2xl font-extrabold mt-1 ${kpis.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatBRL(kpis.profit)}</h3><div className="mt-2 flex items-center gap-1 text-[10px] text-slate-400"><span className={`${kpis.profit>=0 ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'} px-1.5 py-0.5 rounded font-bold`}>{kpis.margin.toFixed(1)}%</span><span>Margem Real</span></div></div>
             <div className={`p-2 rounded-lg ${kpis.profit>=0 ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'}`}><Wallet size={20} /></div>
           </div>
         </div>
 
         <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
           <div className="flex justify-between items-start">
-            <div>
-              <p className="text-xs font-bold text-slate-500 uppercase">Volume Total</p>
-              <h3 className="text-2xl font-extrabold text-slate-800 mt-1">{formatNum(kpis.m2)} <span className="text-sm font-normal text-slate-500">m²</span></h3>
-              <p className="mt-2 text-[10px] text-slate-400">Serrado no período</p>
-            </div>
+            <div><p className="text-xs font-bold text-slate-500 uppercase">Volume Total</p><h3 className="text-2xl font-extrabold text-slate-800 mt-1">{formatNum(kpis.m2)} <span className="text-sm font-normal text-slate-500">m²</span></h3><p className="mt-2 text-[10px] text-slate-400">Serrado no período</p></div>
             <div className="p-2 bg-purple-50 rounded-lg text-purple-600"><Package size={20} /></div>
           </div>
         </div>
 
         <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
           <div className="flex justify-between items-start">
-            <div>
-              <p className="text-xs font-bold text-slate-500 uppercase">Preço Médio</p>
-              <h3 className="text-2xl font-extrabold text-slate-800 mt-1">{formatBRL(kpis.avgPrice)}</h3>
-              <div className="mt-2 flex items-center gap-1 text-[10px] text-slate-400"><span className="bg-orange-50 text-orange-700 px-1.5 py-0.5 rounded font-bold">Por m²</span><span>(Venda Líquida)</span></div>
-            </div>
+            <div><p className="text-xs font-bold text-slate-500 uppercase">Preço Médio</p><h3 className="text-2xl font-extrabold text-slate-800 mt-1">{formatBRL(kpis.avgPrice)}</h3><div className="mt-2 flex items-center gap-1 text-[10px] text-slate-400"><span className="bg-orange-50 text-orange-700 px-1.5 py-0.5 rounded font-bold">Por m²</span><span>(Venda Líquida)</span></div></div>
             <div className="p-2 bg-orange-50 rounded-lg text-orange-600"><Activity size={20} /></div>
           </div>
         </div>
@@ -273,9 +244,9 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
         {periodData.length > 0 ? (<div className="h-80 w-full"><Line data={chartData} options={chartOptions} /></div>) : (<div className="h-40 flex items-center justify-center text-slate-400">Nenhum dado selecionado.</div>)}
       </div>
 
-      {/* DRE RESUMO */}
+      {/* DRE */}
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <h3 className="font-bold text-slate-700 mb-4 text-sm uppercase border-b border-slate-100 pb-2">Resumo Operacional (Soma de {kpis.monthsCount} meses)</h3>
+        <h3 className="font-bold text-slate-700 mb-4 text-sm uppercase border-b border-slate-100 pb-2">Resumo Operacional (Acumulado)</h3>
         <div className="space-y-3 text-sm">
             <div className="flex justify-between font-bold text-slate-800"><span>(+) Faturamento Bruto (Nota)</span><span>{formatBRL(kpis.grossRev)}</span></div>
             <div className="flex justify-between text-slate-500 text-xs pl-4"><span>(-) Fretes (Repasse)</span><span className="text-red-400">- {formatBRL(kpis.freight)}</span></div>
