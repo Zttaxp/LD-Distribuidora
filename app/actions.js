@@ -164,23 +164,48 @@ export async function getSellerDetails(seller, month, year) {
 
 export async function getTopMaterials(month, year) {
   const supabase = createServerActionClient({ cookies });
+
+  // CONSTRUÇÃO SEGURA DAS DATAS (Universal)
+  // Data Inicial: Dia 01 do mês à meia-noite
+  const startDate = `${year}-${String(month).padStart(2, '0')}-01T00:00:00.000Z`;
   
-  // A MUDANÇA ESTÁ AQUI: Usamos .eq em vez de datas complexas
+  // Data Final: Dia 01 do mês seguinte (para pegar até o último milissegundo do mês atual)
+  let nextMonth = Number(month) + 1;
+  let nextYear = Number(year);
+  if (nextMonth > 12) {
+      nextMonth = 1;
+      nextYear = nextYear + 1;
+  }
+  const endDate = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01T00:00:00.000Z`;
+
+  // Log para você ver no terminal do VS Code se está chegando os dados
+  console.log(`🔍 Buscando Mix de Materiais: ${month}/${year} (Range: ${startDate} até ${endDate})`);
+
+  // QUERY: Usa .gte (maior ou igual) e .lt (menor que) na coluna 'date'
   const { data, error } = await supabase
     .from('sales')
     .select('material, m2_total, revenue')
-    .eq('month', month)
-    .eq('year', year); // Filtro direto e seguro
+    .gte('date', startDate)
+    .lt('date', endDate);
 
-  if (error || !data) {
-    console.error("Erro ao buscar materiais:", error);
+  if (error) {
+    console.error("❌ Erro Supabase:", error);
     return { high: [], low: [] };
   }
 
-  // Agrupa e soma duplicados
+  if (!data || data.length === 0) {
+    console.warn("⚠️ Nenhum item de venda encontrado neste intervalo.");
+    return { high: [], low: [] };
+  }
+
+  // LÓGICA DE AGRUPAMENTO (Mantida)
   const grouped = data.reduce((acc, curr) => {
-    const mat = (curr.material || 'OUTROS').trim().toUpperCase();
+    // Normaliza nome (remove espaços extras e deixa maiúsculo)
+    const mat = (curr.material || 'INDEFINIDO').trim().toUpperCase();
+    
     if (!acc[mat]) acc[mat] = { name: mat, m2: 0, revenue: 0 };
+    
+    // Converte para número para evitar erro de soma
     acc[mat].m2 += Number(curr.m2_total || 0);
     acc[mat].revenue += Number(curr.revenue || 0);
     return acc;
@@ -191,8 +216,11 @@ export async function getTopMaterials(month, year) {
     price: item.m2 > 0 ? item.revenue / item.m2 : 0
   }));
 
+  // Filtra e Ordena
   const high = list.filter(i => i.price > 300).sort((a, b) => b.revenue - a.revenue);
   const low = list.filter(i => i.price <= 300).sort((a, b) => b.revenue - a.revenue);
+
+  console.log(`✅ Sucesso: ${high.length} itens Alto Valor, ${low.length} itens Baixo Valor.`);
 
   return { high, low };
 }
