@@ -162,18 +162,23 @@ export async function getSellerDetails(seller, month, year) {
   };
 }
 
-export async function getMonthlySalesData(monthKey) {
-  const supabase = createServerActionClient({ cookies });
+// --- BUSCA DE VENDAS MENSAIS (RANKING MATERIAIS) ---
+export async function getMonthlySalesData(month, year) {
+  // ATENÇÃO: Usamos o createClient() padrão que já importamos no topo
+  const supabase = await createClient();
   
-  // Apenas busca as vendas do mês (sem filtros complexos)
-  // monthKey é algo como "2025-12"
+  // Converte para número para garantir que o filtro funcione nas colunas INT
+  const m = Number(month);
+  const y = Number(year);
+
   const { data, error } = await supabase
     .from('sales')
     .select('material, m2_total, revenue, freight')
-    .eq('month_key', monthKey);
+    .eq('month', m)
+    .eq('year', y);
 
   if (error) {
-    console.error("Erro ao buscar vendas:", error);
+    console.error(`Erro ao buscar vendas ${m}/${y}:`, error);
     return [];
   }
   

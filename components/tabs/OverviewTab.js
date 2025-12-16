@@ -4,7 +4,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { TrendingUp, Users, Package, Wallet, DollarSign, Activity, Calendar, Loader2, Layers, Gem } from 'lucide-react';
 import { Bar, Doughnut, Line } from 'react-chartjs-2';
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, BarElement, ArcElement, Title, Tooltip, Legend, Filler } from 'chart.js';
-// Importamos a nova função simplificada
+// Importamos a função corrigida
 import { getMonthlySalesData } from '@/app/actions';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, ArcElement, Title, Tooltip, Legend, Filler);
@@ -40,15 +40,19 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
     if (months.length > 0 && !selectedMonth) setSelectedMonth(months[0].key);
   }, [months, selectedMonth]);
 
-  // 2. BUSCA AS VENDAS BRUTAS (A LÓGICA ANTIGA E SEGURA)
+  // 2. BUSCA AS VENDAS (CORRIGIDO: Passando Mês e Ano separados)
   useEffect(() => {
     if (!selectedMonth) return;
 
     async function fetchData() {
         setLoadingSales(true);
         try {
-            // Busca a lista crua do banco
-            const sales = await getMonthlySalesData(selectedMonth);
+            // CORREÇÃO: Divide a chave "2025-12" em [2025, 12]
+            const [yearStr, monthStr] = selectedMonth.split('-');
+            
+            // Chama a nova versão da Action passando os dois números
+            const sales = await getMonthlySalesData(monthStr, yearStr);
+            
             setRawSales(sales || []);
         } catch (error) {
             console.error(error);
@@ -60,9 +64,9 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
     fetchData();
   }, [selectedMonth]);
 
-  // 3. PROCESSAMENTO LOCAL (O SEGREDO PARA FUNCIONAR)
-  // Aqui transformamos a lista bruta nos rankings, igual a aba Vendedores faz
+  // 3. PROCESSAMENTO DOS RANKINGS (Client-Side)
   const materialsRanking = useMemo(() => {
+    // Se não tiver vendas, retorna listas vazias
     if (!rawSales || rawSales.length === 0) return { high: [], low: [] };
 
     const grouped = {};
@@ -71,22 +75,19 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
         const mat = (sale.material || 'OUTROS').trim().toUpperCase();
         if (!grouped[mat]) grouped[mat] = { name: mat, m2: 0, revenue: 0 };
         
-        // Garante números
         const m2 = Number(sale.m2_total || 0);
-        // Atenção: Usa a mesma regra de negócio (Revenue já vem limpo do banco ou calculamos aqui se necessário)
         const rev = Number(sale.revenue || 0);
 
         grouped[mat].m2 += m2;
         grouped[mat].revenue += rev;
     });
 
-    // Converte para lista e calcula preço médio
     const list = Object.values(grouped).map(item => ({
         ...item,
         price: item.m2 > 0 ? item.revenue / item.m2 : 0
     }));
 
-    // Separa usando a regra R$300
+    // Separação R$300
     const high = list.filter(i => i.price > 300).sort((a, b) => b.revenue - a.revenue);
     const low = list.filter(i => i.price <= 300).sort((a, b) => b.revenue - a.revenue);
 
@@ -94,7 +95,7 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
   }, [rawSales]);
 
 
-  // 4. CÁLCULO DOS KPIS GERAIS (Baseado no Summary para velocidade)
+  // 4. CÁLCULO KPIS GERAIS
   const currentData = useMemo(() => {
     if (!summary || !selectedMonth) return null;
     return summary.find(s => `${s.year}-${s.month}` === selectedMonth);
@@ -111,7 +112,7 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
     const cmv = safeNum(currentData.total_cost);
     const m2 = safeNum(currentData.total_m2);
     
-    // Usamos os totais do summary, mas poderíamos somar do rawSales se quiséssemos precisão absoluta
+    // Totais vindos do Summary (Isso já estava funcionando, vide seus prints)
     const m2High = safeNum(currentData.total_m2_high);
     const m2Low = safeNum(currentData.total_m2_low);
 
@@ -133,7 +134,7 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
     return { grossRev, netRev, profit, margin, m2, avgPrice, cmv, freight, taxes, comms, fixedOps, varOps, m2High, m2Low };
   }, [currentData, settings, expenses, selectedMonth]);
 
-  // Gráficos e Formatação
+  // Gráficos
   const mixChartData = {
     labels: ['Alto Valor (>R$300/m²)', 'Baixo Valor'],
     datasets: [{
@@ -180,6 +181,7 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
 
   return (
     <div className="space-y-6 fade-in pb-10">
+      
       {/* HEADER */}
       <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 flex justify-between items-center">
          <div>
@@ -249,7 +251,7 @@ export default function OverviewTab({ summary = [], settings, expenses = [] }) {
         </div>
       </div>
       
-      {/* RANKING DETALHADO (NOVO LUGAR, APÓS O GRÁFICO DE MIX) */}
+      {/* RANKING DETALHADO */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
          {/* LISTA DE ALTO VALOR */}
          <div className="bg-white p-5 rounded-xl shadow-sm border border-purple-200 flex flex-col h-[400px]">
