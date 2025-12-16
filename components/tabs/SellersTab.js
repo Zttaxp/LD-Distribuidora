@@ -1,27 +1,30 @@
 "use client";
 
 import { useState, useEffect, useMemo } from 'react';
-import { Target, Trophy, Filter, Download, Calendar, DollarSign, List, Truck, Calculator, Loader2, ChevronDown, ChevronRight, Gem, Layers, ArrowUpDown, BarChart3 } from 'lucide-react';
-import { Bar } from 'react-chartjs-2'; // <--- Importação do Gráfico
+import { Target, Trophy, Filter, Download, Calendar, DollarSign, List, Truck, Calculator, Loader2, ChevronDown, ChevronRight, Gem, Layers, ArrowUpDown, BarChart3, Lock } from 'lucide-react';
+import { Bar } from 'react-chartjs-2';
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend } from 'chart.js';
-import { getSellerDetails, saveSellerGoal, getSellersRanking } from '@/app/actions'; // <--- Importe a nova ação
+import { getSellerDetails, saveSellerGoal, getSellersRanking } from '@/app/actions';
 
-// Registra componentes do gráfico
 ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
 
-export default function SellersTab({ sellers = [], settings }) {
+// --- PERMISSÕES ---
+// No futuro, isso virá do seu banco de dados (tabela de perfis).
+// Por enquanto, aceitamos a prop 'currentUser' para controlar a tela.
+export default function SellersTab({ sellers = [], settings, currentUser = { role: 'admin', name: '' } }) {
+  
   const [selectedSeller, setSelectedSeller] = useState('');
   const [selectedMonthKey, setSelectedMonthKey] = useState('');
   
   const [loading, setLoading] = useState(false);
   const [detailData, setDetailData] = useState({ sales: [], goal: 0 });
   const [localGoal, setLocalGoal] = useState(0);
-  
-  // Estado para o Ranking (Gráfico)
   const [rankingData, setRankingData] = useState([]);
-  
   const [expandedClients, setExpandedClients] = useState({});
   const [sortBy, setSortBy] = useState('TOTAL');
+
+  // Verifica se é Vendedor (Modo Restrito)
+  const isSellerMode = currentUser?.role === 'seller';
 
   // --- 1. FILTROS ---
   const sellersList = useMemo(() => {
@@ -39,12 +42,23 @@ export default function SellersTab({ sellers = [], settings }) {
     return opts;
   }, []);
 
+  // Inicialização Inteligente
   useEffect(() => {
-    if (sellersList.length > 0 && !selectedSeller) setSelectedSeller(sellersList[0]);
-    if (monthOptions.length > 0 && !selectedMonthKey) setSelectedMonthKey(monthOptions[0].key);
-  }, [sellersList, monthOptions, selectedSeller, selectedMonthKey]);
+    // Se for Vendedor, força a seleção do próprio nome
+    if (isSellerMode && currentUser.name) {
+        setSelectedSeller(currentUser.name.toUpperCase());
+    } 
+    // Se for Admin, seleciona o primeiro da lista se não houver seleção
+    else if (sellersList.length > 0 && !selectedSeller) {
+        setSelectedSeller(sellersList[0]);
+    }
 
-  // --- CARREGA DADOS DO VENDEDOR SELECIONADO ---
+    if (monthOptions.length > 0 && !selectedMonthKey) {
+        setSelectedMonthKey(monthOptions[0].key);
+    }
+  }, [sellersList, monthOptions, selectedSeller, selectedMonthKey, isSellerMode, currentUser]);
+
+  // Carrega Dados Detalhados
   useEffect(() => {
     if (!selectedSeller || !selectedMonthKey) return;
     async function loadData() {
@@ -65,67 +79,39 @@ export default function SellersTab({ sellers = [], settings }) {
     loadData();
   }, [selectedSeller, selectedMonthKey]);
 
-  // --- CARREGA DADOS DO RANKING GERAL (NOVO) ---
+  // Carrega Ranking (Apenas se for ADMIN)
   useEffect(() => {
-    if (!selectedMonthKey) return;
+    if (!selectedMonthKey || isSellerMode) return; // Vendedores não veem o ranking geral
     async function loadRanking() {
         const [year, month] = selectedMonthKey.split('-').map(Number);
         const data = await getSellersRanking(month, year);
         setRankingData(data || []);
     }
     loadRanking();
-  }, [selectedMonthKey]);
+  }, [selectedMonthKey, isSellerMode]);
 
-  const handleSaveGoal = async () => { try { await saveSellerGoal(selectedSeller, selectedMonthKey, localGoal); alert('Meta salva!'); } catch (e) { alert('Erro ao salvar meta.'); } };
+  const handleSaveGoal = async () => { 
+      // Vendedores não podem alterar suas metas, apenas Admins
+      if(isSellerMode) return alert('Apenas administradores podem definir metas.');
+      try { await saveSellerGoal(selectedSeller, selectedMonthKey, localGoal); alert('Meta salva!'); } catch (e) { alert('Erro ao salvar meta.'); } 
+  };
   
   const toggleClient = (clientName) => {
     setExpandedClients(prev => ({ ...prev, [clientName]: !prev[clientName] }));
   };
 
-  // --- PREPARAÇÃO DO GRÁFICO ---
+  // --- GRÁFICO (Só Admin vê) ---
   const chartData = {
-    labels: rankingData.map(d => d.name.split(' ')[0]), // Pega só o primeiro nome para caber
+    labels: rankingData.map(d => d.name.split(' ')[0]),
     datasets: [
-        {
-            label: 'Total Vendido',
-            data: rankingData.map(d => d.totalRev),
-            backgroundColor: '#3b82f6', // Azul
-            borderRadius: 4,
-        },
-        {
-            label: 'Alto Valor (>300)',
-            data: rankingData.map(d => d.highRev),
-            backgroundColor: '#a855f7', // Roxo
-            borderRadius: 4,
-        }
+        { label: 'Total Vendido', data: rankingData.map(d => d.totalRev), backgroundColor: '#3b82f6', borderRadius: 4 },
+        { label: 'Alto Valor (>300)', data: rankingData.map(d => d.highRev), backgroundColor: '#a855f7', borderRadius: 4 }
     ]
   };
 
-  const chartOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: {
-        legend: { position: 'top' },
-        tooltip: {
-            callbacks: {
-                label: function(context) {
-                    let label = context.dataset.label || '';
-                    if (label) { label += ': '; }
-                    if (context.parsed.y !== null) {
-                        label += new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(context.parsed.y);
-                    }
-                    return label;
-                }
-            }
-        }
-    },
-    scales: {
-        y: { beginAtZero: true, grid: { color: '#f1f5f9' } },
-        x: { grid: { display: false } }
-    }
-  };
+  const chartOptions = { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'top' }, tooltip: { callbacks: { label: function(context) { let label = context.dataset.label || ''; if (label) { label += ': '; } if (context.parsed.y !== null) { label += new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(context.parsed.y); } return label; } } } }, scales: { y: { beginAtZero: true, grid: { color: '#f1f5f9' } }, x: { grid: { display: false } } } };
 
-  // --- CÁLCULOS (Mantidos) ---
+  // --- CÁLCULOS ---
   const salesList = detailData?.sales || [];
   const commRate = Number(settings?.comm_rate || 3);
 
@@ -150,49 +136,20 @@ export default function SellersTab({ sellers = [], settings }) {
     salesList.forEach(sale => {
       const client = sale.client || 'Consumidor Final';
       if (!groups[client]) {
-        groups[client] = { 
-          name: client, 
-          items: [],
-          totalM2: 0, totalRevenue: 0, totalFreight: 0, totalCost: 0, totalGross: 0,
-          highValueRevenue: 0, highValueM2: 0
-        };
+        groups[client] = { name: client, items: [], totalM2: 0, totalRevenue: 0, totalFreight: 0, totalCost: 0, totalGross: 0, highValueRevenue: 0, highValueM2: 0 };
       }
       
-      const sRev = Number(sale.revenue || 0);
-      const sCost = Number(sale.cost || 0);
-      const sM2 = Number(sale.m2_total || 0);
-      const sProfit = sRev - sCost;
-      const sMargin = sCost > 0 ? (sProfit / sCost) * 100 : 0;
-      
-      const unitPrice = sM2 > 0 ? sRev / sM2 : 0;
-      const isHighValue = unitPrice > 300;
-
+      const sRev = Number(sale.revenue || 0); const sCost = Number(sale.cost || 0); const sM2 = Number(sale.m2_total || 0); const sProfit = sRev - sCost; const sMargin = sCost > 0 ? (sProfit / sCost) * 100 : 0;
+      const unitPrice = sM2 > 0 ? sRev / sM2 : 0; const isHighValue = unitPrice > 300;
       const itemWithCalc = { ...sale, profit: sProfit, margin: sMargin, unitPrice, isHighValue };
-      groups[client].items.push(itemWithCalc);
       
-      groups[client].totalM2 += sM2;
-      groups[client].totalRevenue += sRev;
-      groups[client].totalFreight += Number(sale.freight || 0);
-      groups[client].totalCost += sCost;
-      groups[client].totalGross += (sRev + Number(sale.freight || 0));
-
-      if (isHighValue) {
-          groups[client].highValueRevenue += sRev;
-          groups[client].highValueM2 += sM2;
-      }
+      groups[client].items.push(itemWithCalc);
+      groups[client].totalM2 += sM2; groups[client].totalRevenue += sRev; groups[client].totalFreight += Number(sale.freight || 0); groups[client].totalCost += sCost; groups[client].totalGross += (sRev + Number(sale.freight || 0));
+      if (isHighValue) { groups[client].highValueRevenue += sRev; groups[client].highValueM2 += sM2; }
     });
-
-    const list = Object.values(groups).map(g => {
-        const gProfit = g.totalRevenue - g.totalCost;
-        const gMargin = g.totalCost > 0 ? (gProfit / g.totalCost) * 100 : 0;
-        return { ...g, profit: gProfit, margin: gMargin };
-    });
-
-    if (sortBy === 'HIGH_VALUE') {
-        return list.sort((a, b) => b.highValueRevenue - a.highValueRevenue);
-    }
+    const list = Object.values(groups).map(g => { const gProfit = g.totalRevenue - g.totalCost; const gMargin = g.totalCost > 0 ? (gProfit / g.totalCost) * 100 : 0; return { ...g, profit: gProfit, margin: gMargin }; });
+    if (sortBy === 'HIGH_VALUE') { return list.sort((a, b) => b.highValueRevenue - a.highValueRevenue); }
     return list.sort((a, b) => b.totalRevenue - a.totalRevenue);
-
   }, [salesList, sortBy]);
 
   const formatBRL = (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
@@ -206,10 +163,18 @@ export default function SellersTab({ sellers = [], settings }) {
         <div className="flex flex-col md:flex-row gap-4 items-end">
            <div className="w-full md:w-1/4">
              <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center gap-1"><Filter size={12}/> VENDEDOR</label>
-             <select value={selectedSeller} onChange={(e) => setSelectedSeller(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded text-sm font-bold text-slate-900 p-2 focus:ring-slate-500">
-               {sellersList.length === 0 && <option value="">Sem vendedores...</option>}
-               {sellersList.map(s => <option key={s} value={s}>{s}</option>)}
-             </select>
+             {/* LÓGICA DE TRAVAMENTO DE USUÁRIO */}
+             {isSellerMode ? (
+                <div className="w-full bg-slate-100 border border-slate-300 rounded text-sm font-bold text-slate-700 p-2 flex items-center gap-2">
+                    <Lock size={14} className="text-slate-400"/>
+                    {selectedSeller}
+                </div>
+             ) : (
+                <select value={selectedSeller} onChange={(e) => setSelectedSeller(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded text-sm font-bold text-slate-900 p-2 focus:ring-slate-500">
+                   {sellersList.length === 0 && <option value="">Sem vendedores...</option>}
+                   {sellersList.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+             )}
            </div>
            <div className="w-full md:w-1/4">
              <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center gap-1"><Calendar size={12}/> PERÍODO</label>
@@ -220,8 +185,8 @@ export default function SellersTab({ sellers = [], settings }) {
            <div className="w-full md:w-1/4">
              <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center gap-1"><Target size={12}/> META INDIVIDUAL (R$)</label>
              <div className="flex gap-1">
-               <input type="number" value={localGoal} onChange={(e) => setLocalGoal(e.target.value)} onBlur={handleSaveGoal} className="w-full border-slate-300 rounded text-sm font-bold text-slate-900 p-2" />
-               <button onClick={handleSaveGoal} className="bg-slate-700 text-white px-3 rounded hover:bg-slate-800" title="Salvar"><Target size={16} /></button>
+               <input type="number" value={localGoal} disabled={isSellerMode} onChange={(e) => setLocalGoal(e.target.value)} onBlur={handleSaveGoal} className={`w-full border-slate-300 rounded text-sm font-bold text-slate-900 p-2 ${isSellerMode ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : ''}`} />
+               {!isSellerMode && <button onClick={handleSaveGoal} className="bg-slate-700 text-white px-3 rounded hover:bg-slate-800" title="Salvar"><Target size={16} /></button>}
              </div>
            </div>
            <div className="w-full md:w-1/4 flex flex-col justify-end">
@@ -237,13 +202,15 @@ export default function SellersTab({ sellers = [], settings }) {
         </div>
       </div>
 
-      {/* SEÇÃO 1.5: RANKING COMPARATIVO (NOVO) */}
-      <div className="bg-white p-5 rounded-lg shadow-sm border border-slate-200">
-         <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2 text-sm"><BarChart3 size={16} className="text-cyan-600"/> Comparativo de Performance (Todos os Vendedores)</h3>
-         <div className="h-64 w-full">
-            <Bar data={chartData} options={chartOptions} />
-         </div>
-      </div>
+      {/* SEÇÃO 1.5: RANKING COMPARATIVO (SÓ ADMIN VÊ) */}
+      {!isSellerMode && (
+          <div className="bg-white p-5 rounded-lg shadow-sm border border-slate-200">
+             <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2 text-sm"><BarChart3 size={16} className="text-cyan-600"/> Comparativo de Performance (Todos os Vendedores)</h3>
+             <div className="h-64 w-full">
+                <Bar data={chartData} options={chartOptions} />
+             </div>
+          </div>
+      )}
 
       {loading ? (
         <div className="flex justify-center py-20 text-slate-400"><Loader2 className="animate-spin" size={40} /></div> 
@@ -256,6 +223,7 @@ export default function SellersTab({ sellers = [], settings }) {
               <p className="text-lg font-bold text-white mt-1">{formatBRL(totals.netRevenue)}</p>
               <p className="text-[9px] text-slate-400">Base Comissão</p>
             </div>
+            {/* Fretes e Faturamento Total: Vendedores podem ver? Geralmente sim, para conferir NF */}
             <div className="px-4">
               <p className="text-[10px] text-slate-300 uppercase font-bold flex items-center gap-1"><Truck size={12}/> Fretes</p>
               <p className="text-lg font-bold text-orange-300 mt-1">{formatBRL(totals.freight)}</p>
@@ -264,6 +232,7 @@ export default function SellersTab({ sellers = [], settings }) {
               <p className="text-[10px] text-slate-300 uppercase font-bold flex items-center gap-1"><Calculator size={12}/> Faturamento Total</p>
               <p className="text-lg font-bold text-blue-300 mt-1">{formatBRL(grossRevenue)}</p>
             </div>
+            {/* Lucro Real: Algumas empresas escondem dos vendedores. Se quiser esconder, adicione !isSellerMode && ... */}
             <div className="px-4">
               <p className="text-[10px] text-slate-300 uppercase font-bold">Lucro Real (Bruto)</p>
               <p className={`text-lg font-bold mt-1 ${totalProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>{formatBRL(totalProfit)}</p>

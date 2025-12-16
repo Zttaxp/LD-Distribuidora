@@ -1,308 +1,431 @@
-'use server'
+"use client";
 
-import { createClient } from '@/utils/supabase/server';
-import { revalidatePath } from 'next/cache';
-import * as XLSX from 'xlsx';
+import { useState, useEffect, useMemo } from 'react';
+import { Target, Trophy, Filter, Calendar, DollarSign, List, Truck, Calculator, Loader2, ChevronDown, ChevronRight, Gem, Layers, BarChart3, Lock, ArrowRight } from 'lucide-react';
+import { Bar } from 'react-chartjs-2';
+import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend } from 'chart.js';
+import { getSellerDetails, saveSellerGoal, getSellersRanking } from '@/app/actions';
 
-// --- CONFIGURAÇÕES GERAIS ---
-export async function updateSettings(settings) {
-  const supabase = await createClient();
+ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
+
+export default function SellersTab({ sellers = [], settings, currentUser = { role: 'admin', name: '' } }) {
   
-  try {
-    const { error } = await supabase
-      .from('app_settings')
-      .update({
-        tax_rate: Number(settings.tax_rate),
-        comm_rate: Number(settings.comm_rate),
-        bad_debt_rate: Number(settings.bad_debt_rate),
-        updated_at: new Date()
-      })
-      .eq('id', settings.id || 1);
+  // --- ESTADOS DE CONTROLE ---
+  const [viewMode, setViewMode] = useState('MONTH'); // 'MONTH' ou 'PERIOD'
+  const [selectedSeller, setSelectedSeller] = useState('');
+  
+  // Seletores de Data
+  const [selectedMonthKey, setSelectedMonthKey] = useState(''); // Para Mês Único
+  const [startMonthKey, setStartMonthKey] = useState('');       // Para Período (Início)
+  const [endMonthKey, setEndMonthKey] = useState('');           // Para Período (Fim)
 
-    if (error) throw new Error(error.message);
-    revalidatePath('/');
-    return { success: true };
-  } catch (err) {
-    return { success: false, message: `Erro ao salvar configurações: ${err.message}` };
-  }
-}
+  const [loading, setLoading] = useState(false);
+  const [detailData, setDetailData] = useState({ sales: [], goal: 0 });
+  const [localGoal, setLocalGoal] = useState(0);
+  const [rankingData, setRankingData] = useState([]);
+  const [expandedClients, setExpandedClients] = useState({});
+  const [sortBy, setSortBy] = useState('TOTAL');
 
-// --- DESPESAS (BLINDADO CONTRA ERRO DE RENDER) ---
-export async function addExpense(expense) {
-  try {
-    const supabase = await createClient();
-    
-    // 1. Limpeza robusta do valor (previne erro de texto/vírgula)
-    let cleanValue = 0;
-    const rawValue = expense.value;
+  const isSellerMode = currentUser?.role === 'seller';
 
-    if (typeof rawValue === 'number') {
-      cleanValue = rawValue;
-    } else if (typeof rawValue === 'string') {
-      // Troca vírgula por ponto e remove espaços
-      cleanValue = parseFloat(rawValue.replace(/\./g, '').replace(',', '.'));
+  // --- 1. LISTAS E OPÇÕES ---
+  const sellersList = useMemo(() => {
+    if (!sellers || !Array.isArray(sellers)) return [];
+    const names = sellers.filter(s => s && s.seller).map(s => s.seller);
+    return [...new Set(names)].sort();
+  }, [sellers]);
+
+  // Gera últimos 12 meses + valor numérico para comparação
+  const monthOptions = useMemo(() => {
+    const opts = []; const today = new Date();
+    for(let i=0; i<12; i++) {
+      const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
+      const year = d.getFullYear();
+      const month = d.getMonth() + 1;
+      opts.push({ 
+          key: `${year}-${month}`, 
+          label: d.toLocaleString('pt-BR', { month: 'long', year: 'numeric' }),
+          value: year * 100 + month // Valor para comparar intervalos
+      });
+    }
+    return opts;
+  }, []);
+
+  // Inicialização
+  useEffect(() => {
+    if (isSellerMode && currentUser.name) {
+        setSelectedSeller(currentUser.name.toUpperCase());
+    } else if (sellersList.length > 0 && !selectedSeller) {
+        setSelectedSeller(sellersList[0]);
     }
 
-    // Se a conversão falhou (ex: digitou texto), retorna erro controlado
-    if (isNaN(cleanValue)) {
-      return { success: false, message: "O valor informado não é um número válido." };
+    if (monthOptions.length > 0) {
+        if (!selectedMonthKey) setSelectedMonthKey(monthOptions[0].key);
+        if (!startMonthKey) setStartMonthKey(monthOptions[monthOptions.length - 1].key); // Mais antigo
+        if (!endMonthKey) setEndMonthKey(monthOptions[0].key); // Mais recente
     }
+  }, [sellersList, monthOptions, selectedSeller, selectedMonthKey, isSellerMode, currentUser, startMonthKey, endMonthKey]);
 
-    // 2. Tenta inserir no banco
-    const { data, error } = await supabase
-      .from('expenses')
-      .insert([{
-        name: expense.name,
-        value: cleanValue,
-        type: expense.type,
-        month_key: expense.type === 'VARIABLE' ? expense.month_key : null
-      }])
-      .select()
-      .single();
-
-    if (error) {
-      console.error("Erro Supabase:", error);
-      return { success: false, message: "Erro no banco de dados: " + error.message };
-    }
-    
-    // 3. Atualiza a tela
-    revalidatePath('/');
-    return { success: true, data };
-
-  } catch (err) {
-    console.error("Erro Fatal (Server Action):", err);
-    // Retorna um erro amigável em vez de quebrar a tela preta
-    return { success: false, message: "Erro interno ao processar a despesa." };
-  }
-}
-
-export async function deleteExpense(id) {
-  try {
-    const supabase = await createClient();
-    const { error } = await supabase.from('expenses').delete().eq('id', id);
-    if (error) throw error;
-    revalidatePath('/');
-    return { success: true };
-  } catch (err) {
-    return { success: false, message: "Erro ao apagar despesa." };
-  }
-}
-
-// --- CENÁRIOS MANUAIS ---
-export async function saveManualScenario(data) {
-  const supabase = await createClient();
-  try {
-    const { error } = await supabase
-      .from('manual_scenarios')
-      .upsert(data, { onConflict: 'month_key' });
-
-    if (error) throw error;
-    revalidatePath('/');
-    return { success: true };
-  } catch (err) {
-    return { success: false, message: "Erro ao salvar cenário." };
-  }
-}
-
-export async function getManualScenario(monthKey) {
-  const supabase = await createClient();
-  const { data } = await supabase
-    .from('manual_scenarios')
-    .select('*')
-    .eq('month_key', monthKey)
-    .single();
-  return data || null;
-}
-
-// --- VENDEDORES & METAS ---
-export async function saveSellerGoal(sellerName, monthKey, value) {
-  const supabase = await createClient();
-  try {
-    let cleanValue = value;
-    if (typeof value === 'string') cleanValue = parseFloat(value.replace(',', '.'));
-    
-    const { error } = await supabase
-      .from('seller_goals')
-      .upsert({ 
-        seller_name: sellerName, 
-        month_key: monthKey, 
-        goal_value: cleanValue 
-      }, { onConflict: 'seller_name, month_key' });
-
-    if (error) throw error;
-    revalidatePath('/');
-    return { success: true };
-  } catch (err) {
-    return { success: false, message: "Erro ao salvar meta." };
-  }
-}
-
-export async function getSellerDetails(seller, month, year) {
-  const supabase = await createClient();
-  const monthKey = `${year}-${month}`;
-
-  const { data: sales, error } = await supabase
-    .from('sales')
-    .select('*')
-    .eq('seller', seller)
-    .eq('year', year)
-    .eq('month', month);
-
-  if (error) throw new Error('Erro ao buscar vendas: ' + error.message);
-
-  const { data: goalData } = await supabase
-    .from('seller_goals')
-    .select('goal_value')
-    .eq('seller_name', seller)
-    .eq('month_key', monthKey)
-    .single();
-
-  return {
-    sales: sales || [],
-    goal: goalData?.goal_value || 0
-  };
-}
-
-// --- BUSCA DE VENDAS MENSAIS (RANKING MATERIAIS) ---
-export async function getMonthlySalesData(month, year) {
-  // ATENÇÃO: Usamos o createClient() padrão que já importamos no topo
-  const supabase = await createClient();
-  
-  // Converte para número para garantir que o filtro funcione nas colunas INT
-  const m = Number(month);
-  const y = Number(year);
-
-  const { data, error } = await supabase
-    .from('sales')
-    .select('material, m2_total, revenue, freight')
-    .eq('month', m)
-    .eq('year', y);
-
-  if (error) {
-    console.error(`Erro ao buscar vendas ${m}/${y}:`, error);
-    return [];
-  }
-  
-  return data || [];
-}
-
-export async function processUpload(formData) {
-  const supabase = await createClient();
-  const file = formData.get('file');
-
-  if (!file) return { success: false, message: 'Nenhum arquivo enviado.' };
-
-  try {
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    const workbook = XLSX.read(buffer, { type: 'buffer' });
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(sheet);
-
-    if (rows.length === 0) return { success: false, message: 'Planilha vazia.' };
-
-    const formattedData = rows.map(row => {
-      // 1. Tratamento de Data Robusto
-      let dateObj = new Date();
+  // --- 2. LÓGICA DE PERÍODO ---
+  const targetMonthsKeys = useMemo(() => {
+    if (viewMode === 'MONTH') {
+      return selectedMonthKey ? [selectedMonthKey] : [];
+    } else {
+      if (!startMonthKey || !endMonthKey) return [];
       
-      // Se vier como número serial do Excel (ex: 45260)
-      if (typeof row.Data === 'number') {
-        dateObj = new Date(Math.round((row.Data - 25569) * 86400 * 1000));
-      } 
-      // Se vier como string (ex: "01/12/2025" ou "2025-12-01")
-      else if (typeof row.Data === 'string') {
-        if (row.Data.includes('/')) {
-            const [d, m, y] = row.Data.split('/');
-            dateObj = new Date(`${y}-${m}-${d}`);
-        } else {
-            dateObj = new Date(row.Data);
-        }
-      }
+      const startItem = monthOptions.find(m => m.key === startMonthKey);
+      const endItem = monthOptions.find(m => m.key === endMonthKey);
+      
+      if (!startItem || !endItem) return [];
 
-      // Verifica se a data é válida, se não, usa hoje (fallback de segurança)
-      if (isNaN(dateObj.getTime())) { 
-          dateObj = new Date(); 
-      }
+      const minVal = Math.min(startItem.value, endItem.value);
+      const maxVal = Math.max(startItem.value, endItem.value);
 
-      // 2. Extração Explícita de Mês/Ano (O SEGREDO PARA OS FILTROS FUNCIONAREM)
-      // getMonth() retorna 0-11, então somamos 1
-      const month = dateObj.getMonth() + 1; 
-      const year = dateObj.getFullYear();
-      const monthKey = `${year}-${month}`;
+      return monthOptions
+        .filter(m => m.value >= minVal && m.value <= maxVal)
+        .map(m => m.key);
+    }
+  }, [viewMode, selectedMonthKey, startMonthKey, endMonthKey, monthOptions]);
 
-      // 3. Tratamento de Valores Numéricos
-      // Remove "R$", troca vírgula por ponto, etc.
-      const cleanNum = (val) => {
-          if (typeof val === 'number') return val;
-          if (typeof val === 'string') return parseFloat(val.replace('R$', '').replace(/\./g, '').replace(',', '.').trim()) || 0;
-          return 0;
-      };
+  // --- 3. CARREGAMENTO DE DADOS (AGREGADO) ---
+  useEffect(() => {
+    if (!selectedSeller || targetMonthsKeys.length === 0) return;
 
-      const revenue = cleanNum(row.PrecoUnit || row.Valor || 0);
-      const freight = cleanNum(row.Frete || 0); // Ajuste conforme nome da coluna no seu Excel
-      const cost = cleanNum(row.Custo || 0);    // Ajuste conforme nome da coluna
+    async function loadData() {
+      setLoading(true);
+      try {
+        // Busca dados de TODOS os meses selecionados em paralelo
+        const promises = targetMonthsKeys.map(key => {
+            const [year, month] = key.split('-').map(Number);
+            return getSellerDetails(selectedSeller, month, year);
+        });
 
-      return {
-        date: dateObj.toISOString(),
-        client: (row.Cliente || 'Consumidor Final').toUpperCase(),
-        seller: (row.Vendedor || 'Loja').toUpperCase(),
-        material: (row.Material || 'Diversos').toUpperCase(),
-        chapa: row.Chapa ? String(row.Chapa) : null,
-        m2_total: cleanNum(row.M2 || row.Metragem || 0),
-        revenue: revenue,
-        freight: freight,
-        cost: cost,
+        const results = await Promise.all(promises);
         
-        // CAMPOS CRÍTICOS PARA OS FILTROS:
-        month: month, 
-        year: year,
-        month_key: monthKey
-      };
-    });
+        // Agrega os resultados
+        const aggregatedSales = results.flatMap(r => r?.sales || []);
+        const aggregatedGoal = results.reduce((acc, curr) => acc + (Number(curr?.goal) || 0), 0);
 
-    // Inserção no Banco
-    const { error } = await supabase.from('sales').insert(formattedData);
+        setDetailData({ sales: aggregatedSales, goal: aggregatedGoal });
+        setLocalGoal(aggregatedGoal);
+        setExpandedClients({});
 
-    if (error) throw error;
+      } catch (error) { 
+        console.error(error); 
+        setDetailData({ sales: [], goal: 0 });
+      } finally { 
+        setLoading(false); 
+      }
+    }
+    loadData();
+  }, [selectedSeller, targetMonthsKeys]);
 
-    revalidatePath('/');
-    return { success: true, count: formattedData.length };
+  // Carrega Ranking (Considera apenas o primeiro mês se for período, ou implementa lógica similar)
+  // NOTA: O getSellersRanking atual busca por mês único. Para período, teríamos que adaptar.
+  // Por simplicidade, no modo PERÍODO, vamos desabilitar o ranking ou mostrar apenas do mês final.
+  // Vamos adaptar para somar também.
+  useEffect(() => {
+    if (isSellerMode || targetMonthsKeys.length === 0) return;
 
-  } catch (error) {
-    console.error('Erro no upload:', error);
-    return { success: false, message: 'Erro ao processar planilha: ' + error.message };
-  }
-}
+    async function loadRanking() {
+        // Busca ranking de todos os meses selecionados
+        const promises = targetMonthsKeys.map(key => {
+            const [year, month] = key.split('-').map(Number);
+            return getSellersRanking(month, year);
+        });
 
-// --- RANKING GERAL DE VENDEDORES (NOVO) ---
-export async function getSellersRanking(month, year) {
-  const supabase = await createClient();
+        const results = await Promise.all(promises);
+        // results é um array de arrays de ranking [[{name: 'A', total: 100}, {name: 'B', total: 200}], ...]
+        
+        // Consolida o Ranking
+        const consolidated = {};
+        results.flat().forEach(item => {
+            if (!consolidated[item.name]) consolidated[item.name] = { name: item.name, totalRev: 0, highRev: 0 };
+            consolidated[item.name].totalRev += item.totalRev;
+            consolidated[item.name].highRev += item.highRev;
+        });
+
+        // Converte volta para array e ordena
+        const finalRanking = Object.values(consolidated).sort((a, b) => b.totalRev - a.totalRev);
+        setRankingData(finalRanking);
+    }
+    loadRanking();
+  }, [targetMonthsKeys, isSellerMode]);
+
+  const handleSaveGoal = async () => { 
+      if(isSellerMode) return alert('Apenas administradores podem definir metas.');
+      if(viewMode === 'PERIOD') return alert('Para ajustar metas, selecione "Mês Único".');
+      
+      try { await saveSellerGoal(selectedSeller, selectedMonthKey, localGoal); alert('Meta salva!'); } catch (e) { alert('Erro ao salvar meta.'); } 
+  };
   
-  const { data, error } = await supabase
-    .from('sales')
-    .select('seller, revenue, m2_total')
-    .eq('month', month)
-    .eq('year', year);
+  const toggleClient = (clientName) => {
+    setExpandedClients(prev => ({ ...prev, [clientName]: !prev[clientName] }));
+  };
 
-  if (error || !data) return [];
+  // --- GRÁFICO ---
+  const chartData = {
+    labels: rankingData.map(d => d.name.split(' ')[0]),
+    datasets: [
+        { label: 'Total Vendido', data: rankingData.map(d => d.totalRev), backgroundColor: '#3b82f6', borderRadius: 4 },
+        { label: 'Alto Valor (>300)', data: rankingData.map(d => d.highRev), backgroundColor: '#a855f7', borderRadius: 4 }
+    ]
+  };
 
-  const grouped = data.reduce((acc, curr) => {
-     const seller = (curr.seller || 'DESCONHECIDO').toUpperCase();
-     if (!acc[seller]) acc[seller] = { name: seller, totalRev: 0, highRev: 0 };
-     
-     const rev = Number(curr.revenue || 0);
-     const m2 = Number(curr.m2_total || 0);
-     
-     // Checagem de Alto Valor (> 300) linha a linha
-     const price = m2 > 0 ? rev / m2 : 0;
-     
-     acc[seller].totalRev += rev;
-     if (price > 300) acc[seller].highRev += rev;
-     
-     return acc;
-  }, {});
+  const chartOptions = { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'top' }, tooltip: { callbacks: { label: function(context) { let label = context.dataset.label || ''; if (label) { label += ': '; } if (context.parsed.y !== null) { label += new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(context.parsed.y); } return label; } } } }, scales: { y: { beginAtZero: true, grid: { color: '#f1f5f9' } }, x: { grid: { display: false } } } };
 
-  // Retorna ordenado por Faturamento Total
-  return Object.values(grouped).sort((a, b) => b.totalRev - a.totalRev);
+  // --- CÁLCULOS ---
+  const salesList = detailData?.sales || [];
+  const commRate = Number(settings?.comm_rate || 3);
+
+  const totals = useMemo(() => {
+    return salesList.reduce((acc, curr) => ({
+      netRevenue: acc.netRevenue + Number(curr.revenue || 0),   
+      freight: acc.freight + Number(curr.freight || 0),     
+      cost: acc.cost + Number(curr.cost || 0),
+      m2: acc.m2 + Number(curr.m2_total || 0)
+    }), { netRevenue: 0, freight: 0, cost: 0, m2: 0 });
+  }, [salesList]);
+
+  const grossRevenue = totals.netRevenue + totals.freight;
+  const commission = totals.netRevenue * (commRate / 100);
+  const totalProfit = totals.netRevenue - totals.cost;
+  const goal = Number(localGoal) || 0;
+  const progressPct = goal > 0 ? (totals.netRevenue / goal) * 100 : 0;
+  const missing = Math.max(0, goal - totals.netRevenue);
+
+  const groupedData = useMemo(() => {
+    const groups = {};
+    salesList.forEach(sale => {
+      const client = sale.client || 'Consumidor Final';
+      if (!groups[client]) {
+        groups[client] = { name: client, items: [], totalM2: 0, totalRevenue: 0, totalFreight: 0, totalCost: 0, totalGross: 0, highValueRevenue: 0, highValueM2: 0 };
+      }
+      
+      const sRev = Number(sale.revenue || 0); const sCost = Number(sale.cost || 0); const sM2 = Number(sale.m2_total || 0); const sProfit = sRev - sCost; const sMargin = sCost > 0 ? (sProfit / sCost) * 100 : 0;
+      const unitPrice = sM2 > 0 ? sRev / sM2 : 0; const isHighValue = unitPrice > 300;
+      const itemWithCalc = { ...sale, profit: sProfit, margin: sMargin, unitPrice, isHighValue };
+      
+      groups[client].items.push(itemWithCalc);
+      groups[client].totalM2 += sM2; groups[client].totalRevenue += sRev; groups[client].totalFreight += Number(sale.freight || 0); groups[client].totalCost += sCost; groups[client].totalGross += (sRev + Number(sale.freight || 0));
+      if (isHighValue) { groups[client].highValueRevenue += sRev; groups[client].highValueM2 += sM2; }
+    });
+    const list = Object.values(groups).map(g => { const gProfit = g.totalRevenue - g.totalCost; const gMargin = g.totalCost > 0 ? (gProfit / g.totalCost) * 100 : 0; return { ...g, profit: gProfit, margin: gMargin }; });
+    if (sortBy === 'HIGH_VALUE') { return list.sort((a, b) => b.highValueRevenue - a.highValueRevenue); }
+    return list.sort((a, b) => b.totalRevenue - a.totalRevenue);
+  }, [salesList, sortBy]);
+
+  const formatBRL = (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val || 0);
+  const formatNum = (val) => new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(val || 0);
+
+  return (
+    <div className="space-y-6 fade-in pb-20">
+      
+      {/* SEÇÃO 1: FILTROS */}
+      <div className="bg-white p-5 rounded-lg shadow-sm border border-slate-200">
+        <div className="flex flex-col gap-4">
+            
+            {/* LINHA DE CIMA: CONTROLE DE PERÍODO E VENDEDOR */}
+            <div className="flex flex-col md:flex-row gap-4 items-end">
+                <div className="w-full md:w-1/4">
+                    <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center gap-1"><Filter size={12}/> VENDEDOR</label>
+                    {isSellerMode ? (
+                        <div className="w-full bg-slate-100 border border-slate-300 rounded text-sm font-bold text-slate-700 p-2 flex items-center gap-2">
+                            <Lock size={14} className="text-slate-400"/>
+                            {selectedSeller}
+                        </div>
+                    ) : (
+                        <select value={selectedSeller} onChange={(e) => setSelectedSeller(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded text-sm font-bold text-slate-900 p-2 focus:ring-slate-500">
+                        {sellersList.length === 0 && <option value="">Sem vendedores...</option>}
+                        {sellersList.map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                    )}
+                </div>
+
+                <div className="w-full md:w-1/3">
+                     <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center gap-1"><Calendar size={12}/> PERÍODO</label>
+                     <div className="flex items-center gap-2">
+                        {/* Toggle */}
+                        <div className="flex bg-slate-200 p-1 rounded-md shrink-0">
+                             <button onClick={() => setViewMode('MONTH')} className={`px-2 py-1 rounded text-[10px] font-bold transition-all ${viewMode === 'MONTH' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Mês</button>
+                             <button onClick={() => setViewMode('PERIOD')} className={`px-2 py-1 rounded text-[10px] font-bold transition-all ${viewMode === 'PERIOD' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Período</button>
+                        </div>
+                        
+                        {/* Selectors */}
+                        {viewMode === 'MONTH' ? (
+                            <select value={selectedMonthKey} onChange={(e) => setSelectedMonthKey(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded text-sm font-bold text-slate-900 p-2 focus:ring-slate-500">
+                                {monthOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
+                            </select>
+                        ) : (
+                            <div className="flex items-center gap-1 w-full">
+                                <select value={startMonthKey} onChange={(e) => setStartMonthKey(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded text-xs font-bold text-slate-900 p-2">
+                                    {monthOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
+                                </select>
+                                <ArrowRight size={12} className="text-slate-400 shrink-0"/>
+                                <select value={endMonthKey} onChange={(e) => setEndMonthKey(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded text-xs font-bold text-slate-900 p-2">
+                                    {monthOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
+                                </select>
+                            </div>
+                        )}
+                     </div>
+                </div>
+
+                <div className="w-full md:w-1/4">
+                    <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center gap-1"><Target size={12}/> META {viewMode === 'PERIOD' && '(SOMA)'}</label>
+                    <div className="flex gap-1">
+                    <input type="number" value={localGoal} disabled={isSellerMode || viewMode === 'PERIOD'} onChange={(e) => setLocalGoal(e.target.value)} onBlur={handleSaveGoal} className={`w-full border-slate-300 rounded text-sm font-bold text-slate-900 p-2 ${isSellerMode || viewMode === 'PERIOD' ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : ''}`} />
+                    {!isSellerMode && viewMode === 'MONTH' && <button onClick={handleSaveGoal} className="bg-slate-700 text-white px-3 rounded hover:bg-slate-800" title="Salvar"><Target size={16} /></button>}
+                    </div>
+                </div>
+
+                <div className="w-full md:w-1/4 flex flex-col justify-end pb-2">
+                    <div className="flex justify-between text-xs font-bold text-slate-500 mb-1">
+                        <span>ATINGIMENTO:</span>
+                        <span className={progressPct >= 100 ? 'text-green-600' : 'text-slate-700'}>{progressPct.toFixed(1)}%</span>
+                    </div>
+                    <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
+                        <div className={`h-full ${progressPct >= 100 ? 'bg-green-500' : 'bg-blue-600'}`} style={{ width: `${Math.min(100, progressPct)}%` }}></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+      </div>
+
+      {/* SEÇÃO 1.5: RANKING COMPARATIVO (SÓ ADMIN VÊ) */}
+      {!isSellerMode && (
+          <div className="bg-white p-5 rounded-lg shadow-sm border border-slate-200">
+             <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2 text-sm">
+                 <BarChart3 size={16} className="text-cyan-600"/> 
+                 Comparativo de Performance {viewMode === 'PERIOD' && '(Acumulado no Período)'}
+             </h3>
+             <div className="h-64 w-full">
+                <Bar data={chartData} options={chartOptions} />
+             </div>
+          </div>
+      )}
+
+      {loading ? (
+        <div className="flex justify-center py-20 text-slate-400"><Loader2 className="animate-spin" size={40} /></div> 
+      ) : (
+        <>
+          {/* SEÇÃO 2: TOTAIS VENDEDOR SELECIONADO */}
+          <div className="bg-slate-800 text-white rounded-lg shadow-md p-4 grid grid-cols-2 md:grid-cols-5 gap-4 divide-x divide-slate-600">
+            <div className="px-2">
+              <p className="text-[10px] text-slate-300 uppercase font-bold flex items-center gap-1"><DollarSign size={12}/> Venda Líquida</p>
+              <p className="text-lg font-bold text-white mt-1">{formatBRL(totals.netRevenue)}</p>
+              <p className="text-[9px] text-slate-400">Base Comissão</p>
+            </div>
+            <div className="px-4">
+              <p className="text-[10px] text-slate-300 uppercase font-bold flex items-center gap-1"><Truck size={12}/> Fretes</p>
+              <p className="text-lg font-bold text-orange-300 mt-1">{formatBRL(totals.freight)}</p>
+            </div>
+            <div className="px-4">
+              <p className="text-[10px] text-slate-300 uppercase font-bold flex items-center gap-1"><Calculator size={12}/> Faturamento Total</p>
+              <p className="text-lg font-bold text-blue-300 mt-1">{formatBRL(grossRevenue)}</p>
+            </div>
+            <div className="px-4">
+              <p className="text-[10px] text-slate-300 uppercase font-bold">Lucro Real (Bruto)</p>
+              <p className={`text-lg font-bold mt-1 ${totalProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>{formatBRL(totalProfit)}</p>
+            </div>
+            <div className="px-4">
+              <p className="text-[10px] text-slate-300 uppercase font-bold flex items-center gap-1"><Trophy size={12}/> Comissão ({commRate}%)</p>
+              <p className="text-lg font-bold text-yellow-400 mt-1">{formatBRL(commission)}</p>
+            </div>
+          </div>
+
+          {/* SEÇÃO 3: LISTA CLIENTES */}
+          <div className="bg-white border border-slate-200 rounded-lg shadow-sm">
+            <div className="p-3 border-b border-slate-200 bg-slate-50 flex flex-col md:flex-row justify-between items-center gap-3">
+               <h3 className="font-bold text-slate-700 text-sm flex items-center gap-2"><List size={16}/> Detalhes: {selectedSeller}</h3>
+               
+               <div className="flex bg-slate-200 p-1 rounded-md">
+                  <button onClick={() => setSortBy('TOTAL')} className={`flex items-center gap-1 px-3 py-1 rounded text-xs font-bold transition-all ${sortBy === 'TOTAL' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><DollarSign size={12}/> Venda Total</button>
+                  <button onClick={() => setSortBy('HIGH_VALUE')} className={`flex items-center gap-1 px-3 py-1 rounded text-xs font-bold transition-all ${sortBy === 'HIGH_VALUE' ? 'bg-white text-purple-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Gem size={12}/> Ranking Alto Valor</button>
+               </div>
+            </div>
+            
+            <div className="overflow-x-auto">
+               {groupedData.length === 0 ? (
+                  <div className="p-8 text-center text-slate-400 text-sm">Nenhuma venda encontrada para este vendedor.</div>
+               ) : (
+                  <div className="divide-y divide-slate-100">
+                     <div className="grid grid-cols-12 bg-slate-100 p-3 text-xs font-bold text-slate-600 uppercase">
+                        <div className="col-span-4 pl-8">Cliente</div>
+                        <div className="col-span-1 text-right">M²</div>
+                        <div className="col-span-2 text-right">Venda (Pedra)</div>
+                        <div className="col-span-2 text-right text-purple-600">Alto Valor (&gt;300)</div>
+                        <div className="col-span-1 text-right">Frete</div>
+                        <div className="col-span-2 text-right pr-2">Lucro / Margem</div>
+                     </div>
+
+                     {groupedData.map((group, idx) => {
+                        const isExpanded = expandedClients[group.name];
+                        const highValuePct = group.totalRevenue > 0 ? (group.highValueRevenue / group.totalRevenue) * 100 : 0;
+                        return (
+                           <div key={idx} className="bg-white transition-colors hover:bg-slate-50">
+                              <div onClick={() => toggleClient(group.name)} className={`grid grid-cols-12 p-3 text-xs items-center cursor-pointer border-l-4 ${sortBy === 'HIGH_VALUE' ? 'border-purple-400' : 'border-transparent hover:border-cyan-500'}`}>
+                                 <div className="col-span-4 flex items-center gap-2 font-bold text-slate-800 truncate">
+                                    {isExpanded ? <ChevronDown size={14} className="text-cyan-600 shrink-0"/> : <ChevronRight size={14} className="text-slate-400 shrink-0"/>}
+                                    <span className="truncate">{group.name}</span>
+                                    {highValuePct > 50 && <Gem size={12} className="text-purple-500 shrink-0" title="Cliente Premium" />}
+                                 </div>
+                                 <div className="col-span-1 text-right text-slate-500">{formatNum(group.totalM2)}</div>
+                                 <div className="col-span-2 text-right font-medium text-blue-700">{formatBRL(group.totalRevenue)}</div>
+                                 <div className="col-span-2 text-right flex flex-col justify-center items-end">
+                                    <span className={`font-bold ${group.highValueRevenue > 0 ? 'text-purple-700' : 'text-slate-300'}`}>{formatBRL(group.highValueRevenue)}</span>
+                                    {group.highValueRevenue > 0 && <span className="text-[9px] bg-purple-100 text-purple-700 px-1 rounded">{highValuePct.toFixed(0)}% do mix</span>}
+                                 </div>
+                                 <div className="col-span-1 text-right text-orange-600">{group.totalFreight > 0 ? formatBRL(group.totalFreight) : '-'}</div>
+                                 <div className="col-span-2 text-right pr-2">
+                                    <div className={`font-bold ${group.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatBRL(group.profit)}</div>
+                                    <div className="text-[9px] text-slate-400 font-medium">{group.margin.toFixed(1)}%</div>
+                                 </div>
+                              </div>
+
+                              {isExpanded && (
+                                 <div className="bg-slate-50 border-t border-b border-slate-100 p-2 pl-8 animate-in slide-in-from-top-2 duration-200">
+                                    <table className="w-full text-[10px] text-left">
+                                       <thead className="text-slate-400 font-semibold border-b border-slate-200">
+                                          <tr>
+                                             <th className="pb-2 pl-2">Data</th>
+                                             <th className="pb-2">Material / Classificação</th>
+                                             <th className="pb-2 text-center">Chapa</th>
+                                             <th className="pb-2 text-right">M²</th>
+                                             <th className="pb-2 text-right">R$/m²</th>
+                                             <th className="pb-2 text-right">Venda Liq.</th>
+                                             <th className="pb-2 text-right">Lucro</th>
+                                          </tr>
+                                       </thead>
+                                       <tbody className="divide-y divide-slate-200/50">
+                                          {group.items.sort((a,b) => new Date(a.date) - new Date(b.date)).map((item, i) => (
+                                             <tr key={i} className="hover:bg-slate-100">
+                                                <td className="py-2 pl-2 text-slate-500">{new Date(item.date).toLocaleDateString()}</td>
+                                                <td className="py-2 text-slate-700 font-medium">
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="truncate max-w-[150px]">{item.material}</span>
+                                                        {item.isHighValue ? <span className="flex items-center gap-1 bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded text-[9px] font-bold border border-purple-200"><Gem size={8} /> Alto</span> : <span className="flex items-center gap-1 bg-orange-50 text-orange-700 px-1.5 py-0.5 rounded text-[9px] font-bold border border-orange-100"><Layers size={8} /> Baixo</span>}
+                                                    </div>
+                                                </td>
+                                                <td className="py-2 text-center text-slate-500">{item.chapa || '-'}</td>
+                                                <td className="py-2 text-right text-slate-500">{formatNum(item.m2_total)}</td>
+                                                <td className="py-2 text-right text-slate-400">{formatBRL(item.unitPrice)}</td>
+                                                <td className="py-2 text-right text-blue-700 font-medium">{formatBRL(item.revenue)}</td>
+                                                <td className={`py-2 text-right font-bold pr-2 ${item.profit >= 0 ? 'text-green-600' : 'text-red-500'}`}>{formatBRL(item.profit)}</td>
+                                             </tr>
+                                          ))}
+                                       </tbody>
+                                    </table>
+                                 </div>
+                              )}
+                           </div>
+                        );
+                     })}
+                  </div>
+               )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
