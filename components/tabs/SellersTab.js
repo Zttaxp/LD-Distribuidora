@@ -1,21 +1,24 @@
 "use client";
 
 import { useState, useEffect, useMemo } from 'react';
-import { Target, Trophy, Filter, Download, Calendar, DollarSign, List, Truck, Calculator, Loader2, ChevronDown, ChevronRight, Gem, Layers, ArrowUpDown, BarChart3, Lock } from 'lucide-react';
+import { Target, Trophy, Filter, Calendar, DollarSign, List, Truck, Calculator, Loader2, ChevronDown, ChevronRight, Gem, Layers, BarChart3, Lock, ArrowRight } from 'lucide-react';
 import { Bar } from 'react-chartjs-2';
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend } from 'chart.js';
 import { getSellerDetails, saveSellerGoal, getSellersRanking } from '@/app/actions';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
 
-// --- PERMISSÕES ---
-// No futuro, isso virá do seu banco de dados (tabela de perfis).
-// Por enquanto, aceitamos a prop 'currentUser' para controlar a tela.
 export default function SellersTab({ sellers = [], settings, currentUser = { role: 'admin', name: '' } }) {
   
+  // --- ESTADOS DE CONTROLE ---
+  const [viewMode, setViewMode] = useState('MONTH'); // 'MONTH' ou 'PERIOD'
   const [selectedSeller, setSelectedSeller] = useState('');
-  const [selectedMonthKey, setSelectedMonthKey] = useState('');
   
+  // Seletores de Data
+  const [selectedMonthKey, setSelectedMonthKey] = useState(''); // Para Mês Único
+  const [startMonthKey, setStartMonthKey] = useState('');       // Para Período (Início)
+  const [endMonthKey, setEndMonthKey] = useState('');           // Para Período (Fim)
+
   const [loading, setLoading] = useState(false);
   const [detailData, setDetailData] = useState({ sales: [], goal: 0 });
   const [localGoal, setLocalGoal] = useState(0);
@@ -23,52 +26,90 @@ export default function SellersTab({ sellers = [], settings, currentUser = { rol
   const [expandedClients, setExpandedClients] = useState({});
   const [sortBy, setSortBy] = useState('TOTAL');
 
-  // Verifica se é Vendedor (Modo Restrito)
   const isSellerMode = currentUser?.role === 'seller';
 
-  // --- 1. FILTROS ---
+  // --- 1. LISTAS E OPÇÕES ---
   const sellersList = useMemo(() => {
     if (!sellers || !Array.isArray(sellers)) return [];
     const names = sellers.filter(s => s && s.seller).map(s => s.seller);
     return [...new Set(names)].sort();
   }, [sellers]);
 
+  // Gera últimos 12 meses + valor numérico para comparação
   const monthOptions = useMemo(() => {
     const opts = []; const today = new Date();
     for(let i=0; i<12; i++) {
       const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
-      opts.push({ key: `${d.getFullYear()}-${d.getMonth() + 1}`, label: d.toLocaleString('pt-BR', { month: 'long', year: 'numeric' }) });
+      const year = d.getFullYear();
+      const month = d.getMonth() + 1;
+      opts.push({ 
+          key: `${year}-${month}`, 
+          label: d.toLocaleString('pt-BR', { month: 'long', year: 'numeric' }),
+          value: year * 100 + month // Valor para comparar intervalos
+      });
     }
     return opts;
   }, []);
 
-  // Inicialização Inteligente
+  // Inicialização
   useEffect(() => {
-    // Se for Vendedor, força a seleção do próprio nome
     if (isSellerMode && currentUser.name) {
         setSelectedSeller(currentUser.name.toUpperCase());
-    } 
-    // Se for Admin, seleciona o primeiro da lista se não houver seleção
-    else if (sellersList.length > 0 && !selectedSeller) {
+    } else if (sellersList.length > 0 && !selectedSeller) {
         setSelectedSeller(sellersList[0]);
     }
 
-    if (monthOptions.length > 0 && !selectedMonthKey) {
-        setSelectedMonthKey(monthOptions[0].key);
+    if (monthOptions.length > 0) {
+        if (!selectedMonthKey) setSelectedMonthKey(monthOptions[0].key);
+        if (!startMonthKey) setStartMonthKey(monthOptions[monthOptions.length - 1].key); // Mais antigo
+        if (!endMonthKey) setEndMonthKey(monthOptions[0].key); // Mais recente
     }
-  }, [sellersList, monthOptions, selectedSeller, selectedMonthKey, isSellerMode, currentUser]);
+  }, [sellersList, monthOptions, selectedSeller, selectedMonthKey, isSellerMode, currentUser, startMonthKey, endMonthKey]);
 
-  // Carrega Dados Detalhados
+  // --- 2. LÓGICA DE PERÍODO ---
+  const targetMonthsKeys = useMemo(() => {
+    if (viewMode === 'MONTH') {
+      return selectedMonthKey ? [selectedMonthKey] : [];
+    } else {
+      if (!startMonthKey || !endMonthKey) return [];
+      
+      const startItem = monthOptions.find(m => m.key === startMonthKey);
+      const endItem = monthOptions.find(m => m.key === endMonthKey);
+      
+      if (!startItem || !endItem) return [];
+
+      const minVal = Math.min(startItem.value, endItem.value);
+      const maxVal = Math.max(startItem.value, endItem.value);
+
+      return monthOptions
+        .filter(m => m.value >= minVal && m.value <= maxVal)
+        .map(m => m.key);
+    }
+  }, [viewMode, selectedMonthKey, startMonthKey, endMonthKey, monthOptions]);
+
+  // --- 3. CARREGAMENTO DE DADOS (AGREGADO) ---
   useEffect(() => {
-    if (!selectedSeller || !selectedMonthKey) return;
+    if (!selectedSeller || targetMonthsKeys.length === 0) return;
+
     async function loadData() {
       setLoading(true);
       try {
-        const [year, month] = selectedMonthKey.split('-').map(Number);
-        const result = await getSellerDetails(selectedSeller, month, year);
-        setDetailData(result || { sales: [], goal: 0 });
-        setLocalGoal(result?.goal || 0);
+        // Busca dados de TODOS os meses selecionados em paralelo
+        const promises = targetMonthsKeys.map(key => {
+            const [year, month] = key.split('-').map(Number);
+            return getSellerDetails(selectedSeller, month, year);
+        });
+
+        const results = await Promise.all(promises);
+        
+        // Agrega os resultados
+        const aggregatedSales = results.flatMap(r => r?.sales || []);
+        const aggregatedGoal = results.reduce((acc, curr) => acc + (Number(curr?.goal) || 0), 0);
+
+        setDetailData({ sales: aggregatedSales, goal: aggregatedGoal });
+        setLocalGoal(aggregatedGoal);
         setExpandedClients({});
+
       } catch (error) { 
         console.error(error); 
         setDetailData({ sales: [], goal: 0 });
@@ -77,22 +118,44 @@ export default function SellersTab({ sellers = [], settings, currentUser = { rol
       }
     }
     loadData();
-  }, [selectedSeller, selectedMonthKey]);
+  }, [selectedSeller, targetMonthsKeys]);
 
-  // Carrega Ranking (Apenas se for ADMIN)
+  // Carrega Ranking (Considera apenas o primeiro mês se for período, ou implementa lógica similar)
+  // NOTA: O getSellersRanking atual busca por mês único. Para período, teríamos que adaptar.
+  // Por simplicidade, no modo PERÍODO, vamos desabilitar o ranking ou mostrar apenas do mês final.
+  // Vamos adaptar para somar também.
   useEffect(() => {
-    if (!selectedMonthKey || isSellerMode) return; // Vendedores não veem o ranking geral
+    if (isSellerMode || targetMonthsKeys.length === 0) return;
+
     async function loadRanking() {
-        const [year, month] = selectedMonthKey.split('-').map(Number);
-        const data = await getSellersRanking(month, year);
-        setRankingData(data || []);
+        // Busca ranking de todos os meses selecionados
+        const promises = targetMonthsKeys.map(key => {
+            const [year, month] = key.split('-').map(Number);
+            return getSellersRanking(month, year);
+        });
+
+        const results = await Promise.all(promises);
+        // results é um array de arrays de ranking [[{name: 'A', total: 100}, {name: 'B', total: 200}], ...]
+        
+        // Consolida o Ranking
+        const consolidated = {};
+        results.flat().forEach(item => {
+            if (!consolidated[item.name]) consolidated[item.name] = { name: item.name, totalRev: 0, highRev: 0 };
+            consolidated[item.name].totalRev += item.totalRev;
+            consolidated[item.name].highRev += item.highRev;
+        });
+
+        // Converte volta para array e ordena
+        const finalRanking = Object.values(consolidated).sort((a, b) => b.totalRev - a.totalRev);
+        setRankingData(finalRanking);
     }
     loadRanking();
-  }, [selectedMonthKey, isSellerMode]);
+  }, [targetMonthsKeys, isSellerMode]);
 
   const handleSaveGoal = async () => { 
-      // Vendedores não podem alterar suas metas, apenas Admins
       if(isSellerMode) return alert('Apenas administradores podem definir metas.');
+      if(viewMode === 'PERIOD') return alert('Para ajustar metas, selecione "Mês Único".');
+      
       try { await saveSellerGoal(selectedSeller, selectedMonthKey, localGoal); alert('Meta salva!'); } catch (e) { alert('Erro ao salvar meta.'); } 
   };
   
@@ -100,7 +163,7 @@ export default function SellersTab({ sellers = [], settings, currentUser = { rol
     setExpandedClients(prev => ({ ...prev, [clientName]: !prev[clientName] }));
   };
 
-  // --- GRÁFICO (Só Admin vê) ---
+  // --- GRÁFICO ---
   const chartData = {
     labels: rankingData.map(d => d.name.split(' ')[0]),
     datasets: [
@@ -160,52 +223,81 @@ export default function SellersTab({ sellers = [], settings, currentUser = { rol
       
       {/* SEÇÃO 1: FILTROS */}
       <div className="bg-white p-5 rounded-lg shadow-sm border border-slate-200">
-        <div className="flex flex-col md:flex-row gap-4 items-end">
-           <div className="w-full md:w-1/4">
-             <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center gap-1"><Filter size={12}/> VENDEDOR</label>
-             {/* LÓGICA DE TRAVAMENTO DE USUÁRIO */}
-             {isSellerMode ? (
-                <div className="w-full bg-slate-100 border border-slate-300 rounded text-sm font-bold text-slate-700 p-2 flex items-center gap-2">
-                    <Lock size={14} className="text-slate-400"/>
-                    {selectedSeller}
+        <div className="flex flex-col gap-4">
+            
+            {/* LINHA DE CIMA: CONTROLE DE PERÍODO E VENDEDOR */}
+            <div className="flex flex-col md:flex-row gap-4 items-end">
+                <div className="w-full md:w-1/4">
+                    <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center gap-1"><Filter size={12}/> VENDEDOR</label>
+                    {isSellerMode ? (
+                        <div className="w-full bg-slate-100 border border-slate-300 rounded text-sm font-bold text-slate-700 p-2 flex items-center gap-2">
+                            <Lock size={14} className="text-slate-400"/>
+                            {selectedSeller}
+                        </div>
+                    ) : (
+                        <select value={selectedSeller} onChange={(e) => setSelectedSeller(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded text-sm font-bold text-slate-900 p-2 focus:ring-slate-500">
+                        {sellersList.length === 0 && <option value="">Sem vendedores...</option>}
+                        {sellersList.map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                    )}
                 </div>
-             ) : (
-                <select value={selectedSeller} onChange={(e) => setSelectedSeller(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded text-sm font-bold text-slate-900 p-2 focus:ring-slate-500">
-                   {sellersList.length === 0 && <option value="">Sem vendedores...</option>}
-                   {sellersList.map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
-             )}
-           </div>
-           <div className="w-full md:w-1/4">
-             <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center gap-1"><Calendar size={12}/> PERÍODO</label>
-             <select value={selectedMonthKey} onChange={(e) => setSelectedMonthKey(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded text-sm font-bold text-slate-900 p-2 focus:ring-slate-500">
-               {monthOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
-             </select>
-           </div>
-           <div className="w-full md:w-1/4">
-             <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center gap-1"><Target size={12}/> META INDIVIDUAL (R$)</label>
-             <div className="flex gap-1">
-               <input type="number" value={localGoal} disabled={isSellerMode} onChange={(e) => setLocalGoal(e.target.value)} onBlur={handleSaveGoal} className={`w-full border-slate-300 rounded text-sm font-bold text-slate-900 p-2 ${isSellerMode ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : ''}`} />
-               {!isSellerMode && <button onClick={handleSaveGoal} className="bg-slate-700 text-white px-3 rounded hover:bg-slate-800" title="Salvar"><Target size={16} /></button>}
-             </div>
-           </div>
-           <div className="w-full md:w-1/4 flex flex-col justify-end">
-              <div className="flex justify-between text-xs font-bold text-slate-500 mb-1">
-                <span>ATINGIMENTO:</span>
-                <span className={progressPct >= 100 ? 'text-green-600' : 'text-slate-700'}>{progressPct.toFixed(1)}%</span>
-              </div>
-              <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
-                <div className={`h-full ${progressPct >= 100 ? 'bg-green-500' : 'bg-blue-600'}`} style={{ width: `${Math.min(100, progressPct)}%` }}></div>
-              </div>
-              <p className="text-[10px] text-right text-slate-400 mt-1">Faltam: {formatBRL(missing)}</p>
-           </div>
+
+                <div className="w-full md:w-1/3">
+                     <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center gap-1"><Calendar size={12}/> PERÍODO</label>
+                     <div className="flex items-center gap-2">
+                        {/* Toggle */}
+                        <div className="flex bg-slate-200 p-1 rounded-md shrink-0">
+                             <button onClick={() => setViewMode('MONTH')} className={`px-2 py-1 rounded text-[10px] font-bold transition-all ${viewMode === 'MONTH' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Mês</button>
+                             <button onClick={() => setViewMode('PERIOD')} className={`px-2 py-1 rounded text-[10px] font-bold transition-all ${viewMode === 'PERIOD' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Período</button>
+                        </div>
+                        
+                        {/* Selectors */}
+                        {viewMode === 'MONTH' ? (
+                            <select value={selectedMonthKey} onChange={(e) => setSelectedMonthKey(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded text-sm font-bold text-slate-900 p-2 focus:ring-slate-500">
+                                {monthOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
+                            </select>
+                        ) : (
+                            <div className="flex items-center gap-1 w-full">
+                                <select value={startMonthKey} onChange={(e) => setStartMonthKey(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded text-xs font-bold text-slate-900 p-2">
+                                    {monthOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
+                                </select>
+                                <ArrowRight size={12} className="text-slate-400 shrink-0"/>
+                                <select value={endMonthKey} onChange={(e) => setEndMonthKey(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded text-xs font-bold text-slate-900 p-2">
+                                    {monthOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
+                                </select>
+                            </div>
+                        )}
+                     </div>
+                </div>
+
+                <div className="w-full md:w-1/4">
+                    <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center gap-1"><Target size={12}/> META {viewMode === 'PERIOD' && '(SOMA)'}</label>
+                    <div className="flex gap-1">
+                    <input type="number" value={localGoal} disabled={isSellerMode || viewMode === 'PERIOD'} onChange={(e) => setLocalGoal(e.target.value)} onBlur={handleSaveGoal} className={`w-full border-slate-300 rounded text-sm font-bold text-slate-900 p-2 ${isSellerMode || viewMode === 'PERIOD' ? 'bg-slate-100 text-slate-500 cursor-not-allowed' : ''}`} />
+                    {!isSellerMode && viewMode === 'MONTH' && <button onClick={handleSaveGoal} className="bg-slate-700 text-white px-3 rounded hover:bg-slate-800" title="Salvar"><Target size={16} /></button>}
+                    </div>
+                </div>
+
+                <div className="w-full md:w-1/4 flex flex-col justify-end pb-2">
+                    <div className="flex justify-between text-xs font-bold text-slate-500 mb-1">
+                        <span>ATINGIMENTO:</span>
+                        <span className={progressPct >= 100 ? 'text-green-600' : 'text-slate-700'}>{progressPct.toFixed(1)}%</span>
+                    </div>
+                    <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
+                        <div className={`h-full ${progressPct >= 100 ? 'bg-green-500' : 'bg-blue-600'}`} style={{ width: `${Math.min(100, progressPct)}%` }}></div>
+                    </div>
+                </div>
+            </div>
         </div>
       </div>
 
       {/* SEÇÃO 1.5: RANKING COMPARATIVO (SÓ ADMIN VÊ) */}
       {!isSellerMode && (
           <div className="bg-white p-5 rounded-lg shadow-sm border border-slate-200">
-             <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2 text-sm"><BarChart3 size={16} className="text-cyan-600"/> Comparativo de Performance (Todos os Vendedores)</h3>
+             <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2 text-sm">
+                 <BarChart3 size={16} className="text-cyan-600"/> 
+                 Comparativo de Performance {viewMode === 'PERIOD' && '(Acumulado no Período)'}
+             </h3>
              <div className="h-64 w-full">
                 <Bar data={chartData} options={chartOptions} />
              </div>
@@ -223,7 +315,6 @@ export default function SellersTab({ sellers = [], settings, currentUser = { rol
               <p className="text-lg font-bold text-white mt-1">{formatBRL(totals.netRevenue)}</p>
               <p className="text-[9px] text-slate-400">Base Comissão</p>
             </div>
-            {/* Fretes e Faturamento Total: Vendedores podem ver? Geralmente sim, para conferir NF */}
             <div className="px-4">
               <p className="text-[10px] text-slate-300 uppercase font-bold flex items-center gap-1"><Truck size={12}/> Fretes</p>
               <p className="text-lg font-bold text-orange-300 mt-1">{formatBRL(totals.freight)}</p>
@@ -232,7 +323,6 @@ export default function SellersTab({ sellers = [], settings, currentUser = { rol
               <p className="text-[10px] text-slate-300 uppercase font-bold flex items-center gap-1"><Calculator size={12}/> Faturamento Total</p>
               <p className="text-lg font-bold text-blue-300 mt-1">{formatBRL(grossRevenue)}</p>
             </div>
-            {/* Lucro Real: Algumas empresas escondem dos vendedores. Se quiser esconder, adicione !isSellerMode && ... */}
             <div className="px-4">
               <p className="text-[10px] text-slate-300 uppercase font-bold">Lucro Real (Bruto)</p>
               <p className={`text-lg font-bold mt-1 ${totalProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>{formatBRL(totalProfit)}</p>
