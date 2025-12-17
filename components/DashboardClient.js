@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useRef, useMemo, useEffect } from 'react';
-// CORREÇÃO: Voltamos a usar o seu utilitário local em vez da biblioteca direta
-import { createClient } from '@/utils/supabase/client'; 
+// CORREÇÃO: Importando direto da biblioteca oficial para evitar erros de arquivo
+import { createBrowserClient } from '@supabase/ssr';
 import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import { parseExcelData } from '@/lib/parser';
@@ -28,14 +28,18 @@ export default function DashboardClient({
 }) {
   const router = useRouter();
   
-  // CORREÇÃO: Inicialização usando o padrão do seu projeto
-  const supabase = createClient();
+  // INICIALIZAÇÃO SEGURA DO SUPABASE
+  const supabase = createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  );
 
   const isSeller = userProfile?.role === 'vendedor';
   const [activeTab, setActiveTab] = useState(isSeller ? 'sellers' : 'overview');
   const [isUploading, setIsUploading] = useState(false);
+  
+  // State de montagem para evitar Erro de Hidratação (#418)
   const [mounted, setMounted] = useState(false);
-
   useEffect(() => {
     setMounted(true);
   }, []);
