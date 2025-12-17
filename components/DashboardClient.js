@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useRef, useMemo, useEffect } from 'react';
-import { createBrowserClient } from '@supabase/ssr';
+// CORREÇÃO: Voltamos a usar o seu utilitário local em vez da biblioteca direta
+import { createClient } from '@/utils/supabase/client'; 
 import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import { parseExcelData } from '@/lib/parser';
@@ -26,17 +27,15 @@ export default function DashboardClient({
   currentDatasetId 
 }) {
   const router = useRouter();
-  const supabase = createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-  );
+  
+  // CORREÇÃO: Inicialização usando o padrão do seu projeto
+  const supabase = createClient();
 
   const isSeller = userProfile?.role === 'vendedor';
   const [activeTab, setActiveTab] = useState(isSeller ? 'sellers' : 'overview');
   const [isUploading, setIsUploading] = useState(false);
   const [mounted, setMounted] = useState(false);
 
-  // Evita erro de hidratação esperando o componente montar
   useEffect(() => {
     setMounted(true);
   }, []);
@@ -78,7 +77,6 @@ export default function DashboardClient({
       const { error: uploadError } = await supabase.storage.from('uploads').upload(fileName, file);
       if (uploadError) console.warn("Aviso Storage:", uploadError.message);
 
-      // Cria registro do arquivo
       const { data: datasetData, error: datasetError } = await supabase
         .from('datasets')
         .insert([{ name: file.name, uploaded_at: new Date() }])
@@ -91,7 +89,6 @@ export default function DashboardClient({
       const workbook = XLSX.read(buffer, { type: 'array' });
       const jsonData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: "" });
       
-      // Parser
       const parsedSales = parseExcelData(jsonData, datasetData.id);
       console.log("3. Linhas processadas:", parsedSales.length);
 
