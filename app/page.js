@@ -9,8 +9,8 @@ export const dynamic = 'force-dynamic';
 async function loadDashboardData(datasetId) {
   const supabase = await createClient();
 
-  // Se não tem datasetId, não carrega nada (ou carrega vazio)
-  if (!datasetId) {
+  // FIX 400 ERROR: Se o ID for inválido ou vazio, retorna zerado sem chamar o banco
+  if (!datasetId || datasetId === 'undefined') {
     return {
       salesSummary: [], topMaterials: [], sellersSummary: [], 
       appSettings: {}, expenses: [], manualScenarios: []
@@ -27,7 +27,7 @@ async function loadDashboardData(datasetId) {
   ] = await Promise.all([
     supabase.from('monthly_sales_summary').select('*').eq('dataset_id', datasetId),
     supabase.from('top_materials_summary').select('*').eq('dataset_id', datasetId),
-    supabase.from('sellers_summary').select('*').eq('dataset_id', datasetId), // Agora filtra pelo ID
+    supabase.from('sellers_summary').select('*').eq('dataset_id', datasetId),
     supabase.from('app_settings').select('*').single(),
     supabase.from('expenses').select('*'),
     supabase.from('manual_scenarios').select('*') 
@@ -46,26 +46,23 @@ async function loadDashboardData(datasetId) {
 export default async function Page({ searchParams }) {
   const supabase = await createClient();
 
-  // 1. Auth Check
   const { data: { user }, error } = await supabase.auth.getUser();
   if (error || !user) redirect('/login');
 
-  // 2. Busca Perfil
   let userProfile = { role: 'vendedor', name: '' };
   const { data: profile } = await supabase.from('profiles').select('*').eq('id', user.id).single();
   if (profile) userProfile = profile;
 
-  // 3. Busca lista de Datasets (Arquivos) para o menu
+  // Busca lista de Datasets
   const { data: datasets } = await supabase
     .from('datasets')
     .select('*')
     .order('uploaded_at', { ascending: false });
 
-  // 4. Define qual Dataset mostrar
-  // Se veio na URL (?datasetId=123), usa ele. Se não, usa o mais recente da lista.
+  // Define qual Dataset mostrar (com segurança para arrays vazios)
+  // Se datasets for null/vazio, currentDatasetId será undefined
   const currentDatasetId = searchParams?.datasetId || datasets?.[0]?.id;
 
-  // 5. Carrega dados filtrados
   const data = await loadDashboardData(currentDatasetId);
 
   return (
@@ -79,7 +76,6 @@ export default async function Page({ searchParams }) {
           initialExpenses={data.expenses}
           initialScenarios={data.manualScenarios}
           userProfile={userProfile}
-          // NOVAS PROPS:
           datasets={datasets || []}
           currentDatasetId={currentDatasetId}
         />
