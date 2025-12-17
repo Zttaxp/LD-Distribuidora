@@ -46,15 +46,19 @@ export default function DashboardClient({
   const summaryData = initialSummary || [];
   const topMaterials = initialTopMaterials || [];
   
-  // 4. Filtrando dados do vendedor (useMemo para performance)
+ // 4. Filtrando dados do vendedor (useMemo para performance)
   const sellersData = useMemo(() => {
     const allSellers = initialSellers || [];
     
-    if (isSeller && userProfile?.name) {
-      // Filtra apenas os dados onde o nome bate com o perfil do usuário
-      return allSellers.filter(s => 
-        s.name.toLowerCase() === userProfile.name.toLowerCase()
-      );
+    if (isSeller) {
+      // BLINDAGEM: Garante que não vai quebrar se userProfile.name for nulo
+      const profileName = userProfile?.name ? userProfile.name.toLowerCase().trim() : "";
+      
+      return allSellers.filter(s => {
+        // BLINDAGEM: Garante que não vai quebrar se s.name (do banco) for nulo
+        const sellerName = s.name ? s.name.toLowerCase().trim() : "";
+        return sellerName === profileName;
+      });
     }
     return allSellers;
   }, [initialSellers, isSeller, userProfile]);
