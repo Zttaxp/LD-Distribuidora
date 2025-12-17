@@ -21,11 +21,20 @@ export async function middleware(request) {
     }
   )
 
+  // Atualiza a sessão
   const { data: { user } } = await supabase.auth.getUser()
 
-  // Se não tem usuário e não está na página de login, redireciona
-  if (!user && !request.nextUrl.pathname.startsWith('/login')) {
+  const isLoginPage = request.nextUrl.pathname.startsWith('/login')
+
+  // CASO 1: Usuário NÃO logado tentando acessar página protegida -> Manda pro Login
+  if (!user && !isLoginPage) {
     return NextResponse.redirect(new URL('/login', request.url))
+  }
+
+  // CASO 2 (A CORREÇÃO): Usuário JÁ logado tentando acessar o Login -> Manda pra Home
+  // Isso quebra o loop infinito de redirecionamento
+  if (user && isLoginPage) {
+    return NextResponse.redirect(new URL('/', request.url))
   }
 
   return response
