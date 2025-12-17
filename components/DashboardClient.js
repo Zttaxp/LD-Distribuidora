@@ -38,15 +38,13 @@ export default function DashboardClient({
   const isSeller = userProfile?.role === 'vendedor';
   const isAdmin = userProfile?.role === 'admin';
 
-  // Debug: Veja isso no Console do Navegador (F12) para corrigir o nome
+  // --- CORREÇÃO DO DEBUG ---
   useEffect(() => {
     if (isSeller) {
-      console.log("--- DEBUG VENDEDOR ---");
-      console.log("Nome no Perfil (Supabase):", userProfile?.name);
-      console.log("Nomes disponíveis nas Vendas:", initialSellers?.map(s => s.name));
-      const match = initialSellers?.find(s => s.name.toLowerCase().trim() === userProfile?.name?.toLowerCase().trim());
-      console.log("Encontrou correspondência?", match ? "SIM" : "NÃO");
-      console.log("-----------------------");
+      console.log("--- DEBUG VENDEDOR (CORRIGIDO) ---");
+      console.log("Perfil:", userProfile?.name);
+      // Agora olhamos para s.seller, que é o campo correto
+      console.log("Nomes na base:", initialSellers?.map(s => s.seller));
     }
   }, [isSeller, userProfile, initialSellers]);
 
@@ -56,16 +54,19 @@ export default function DashboardClient({
   const summaryData = initialSummary || [];
   const topMaterials = initialTopMaterials || [];
   
-  // Lógica de Filtro
+  // --- LÓGICA DE FILTRO CORRIGIDA (CRUCIAL) ---
   const sellersData = useMemo(() => {
     const allSellers = initialSellers || [];
     
     if (isSeller) {
-      const profileName = userProfile?.name ? userProfile.name.toLowerCase().trim() : "";
+      // Blindagem: Converte para string segura antes de dar toLowerCase
+      const profileName = (userProfile?.name || "").toLowerCase().trim();
       
       return allSellers.filter(s => {
-        const sellerName = s.name ? s.name.toLowerCase().trim() : "";
-        return sellerName === profileName;
+        // CORREÇÃO: Usar s.seller em vez de s.name
+        // A (s.seller || s.name || "") garante que tenta as duas opções e não quebra se for null
+        const sellerNameFromDB = (s.seller || s.name || "").toLowerCase().trim();
+        return sellerNameFromDB === profileName;
       });
     }
     return allSellers;
@@ -134,7 +135,7 @@ export default function DashboardClient({
   };
 
   const renderContent = () => {
-    if (isSeller && activeTab !== 'sellers') return <SellersTab sellers={sellersData} settings={settings} isSeller={isSeller} />;
+    if (isSeller && activeTab !== 'sellers') return <SellersTab sellers={sellersData} settings={settings} currentUser={userProfile} />;
 
     switch (activeTab) {
       case 'overview':
@@ -144,8 +145,8 @@ export default function DashboardClient({
       case 'annual':
         return <AnnualTab summary={summaryData} settings={settings} expenses={expenses} scenarios={manualScenarios} />;
       case 'sellers':
-        // AQUI: Passamos a propriedade isSeller para dentro da aba
-        return <SellersTab sellers={sellersData} settings={settings} isSeller={isSeller} />;
+        // AQUI: Passamos currentUser em vez de isSeller, para bater com o SellersTab novo
+        return <SellersTab sellers={sellersData} settings={settings} currentUser={userProfile} />;
       default:
         return <OverviewTab summary={summaryData} topMaterials={topMaterials} />;
     }
