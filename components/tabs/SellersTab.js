@@ -26,7 +26,8 @@ export default function SellersTab({ sellers = [], settings, currentUser = { rol
   const [expandedClients, setExpandedClients] = useState({});
   const [sortBy, setSortBy] = useState('TOTAL');
 
-  const isSellerMode = currentUser?.role === 'seller';
+  // CORREÇÃO 1: Ajustado para 'vendedor' conforme Supabase
+  const isSellerMode = currentUser?.role === 'vendedor';
 
   // --- 1. LISTAS E OPÇÕES ---
   const sellersList = useMemo(() => {
@@ -51,18 +52,32 @@ export default function SellersTab({ sellers = [], settings, currentUser = { rol
     return opts;
   }, []);
 
-  // Inicialização
+  // Inicialização Inteligente (CORREÇÃO DO ZERO DATA)
   useEffect(() => {
+    // Se for vendedor, tenta encontrar o nome correspondente na lista (Case Insensitive)
     if (isSellerMode && currentUser.name) {
-        setSelectedSeller(currentUser.name.toUpperCase());
+        const myNameNormalized = currentUser.name.toLowerCase().trim();
+        
+        // Procura na lista de vendedores da planilha qual é a grafia correta
+        const exactMatch = sellersList.find(s => s.toLowerCase().trim() === myNameNormalized);
+        
+        if (exactMatch) {
+            setSelectedSeller(exactMatch); // Usa o nome exato da planilha para buscar dados
+        } else {
+            console.warn(`Vendedor logado (${currentUser.name}) não encontrado na planilha.`);
+            // Opcional: define mesmo assim para mostrar zerado ou mantém vazio
+            setSelectedSeller(currentUser.name); 
+        }
+
     } else if (sellersList.length > 0 && !selectedSeller) {
+        // Se for admin e nada selecionado, pega o primeiro
         setSelectedSeller(sellersList[0]);
     }
 
     if (monthOptions.length > 0) {
         if (!selectedMonthKey) setSelectedMonthKey(monthOptions[0].key);
-        if (!startMonthKey) setStartMonthKey(monthOptions[monthOptions.length - 1].key); // Mais antigo
-        if (!endMonthKey) setEndMonthKey(monthOptions[0].key); // Mais recente
+        if (!startMonthKey) setStartMonthKey(monthOptions[monthOptions.length - 1].key); 
+        if (!endMonthKey) setEndMonthKey(monthOptions[0].key); 
     }
   }, [sellersList, monthOptions, selectedSeller, selectedMonthKey, isSellerMode, currentUser, startMonthKey, endMonthKey]);
 
@@ -120,24 +135,18 @@ export default function SellersTab({ sellers = [], settings, currentUser = { rol
     loadData();
   }, [selectedSeller, targetMonthsKeys]);
 
-  // Carrega Ranking (Considera apenas o primeiro mês se for período, ou implementa lógica similar)
-  // NOTA: O getSellersRanking atual busca por mês único. Para período, teríamos que adaptar.
-  // Por simplicidade, no modo PERÍODO, vamos desabilitar o ranking ou mostrar apenas do mês final.
-  // Vamos adaptar para somar também.
+  // Carrega Ranking (Somente se NÃO for vendedor)
   useEffect(() => {
     if (isSellerMode || targetMonthsKeys.length === 0) return;
 
     async function loadRanking() {
-        // Busca ranking de todos os meses selecionados
         const promises = targetMonthsKeys.map(key => {
             const [year, month] = key.split('-').map(Number);
             return getSellersRanking(month, year);
         });
 
         const results = await Promise.all(promises);
-        // results é um array de arrays de ranking [[{name: 'A', total: 100}, {name: 'B', total: 200}], ...]
         
-        // Consolida o Ranking
         const consolidated = {};
         results.flat().forEach(item => {
             if (!consolidated[item.name]) consolidated[item.name] = { name: item.name, totalRev: 0, highRev: 0 };
@@ -145,7 +154,6 @@ export default function SellersTab({ sellers = [], settings, currentUser = { rol
             consolidated[item.name].highRev += item.highRev;
         });
 
-        // Converte volta para array e ordena
         const finalRanking = Object.values(consolidated).sort((a, b) => b.totalRev - a.totalRev);
         setRankingData(finalRanking);
     }
@@ -192,8 +200,7 @@ export default function SellersTab({ sellers = [], settings, currentUser = { rol
   const totalProfit = totals.netRevenue - totals.cost;
   const goal = Number(localGoal) || 0;
   const progressPct = goal > 0 ? (totals.netRevenue / goal) * 100 : 0;
-  const missing = Math.max(0, goal - totals.netRevenue);
-
+  
   const groupedData = useMemo(() => {
     const groups = {};
     salesList.forEach(sale => {
@@ -232,7 +239,7 @@ export default function SellersTab({ sellers = [], settings, currentUser = { rol
                     {isSellerMode ? (
                         <div className="w-full bg-slate-100 border border-slate-300 rounded text-sm font-bold text-slate-700 p-2 flex items-center gap-2">
                             <Lock size={14} className="text-slate-400"/>
-                            {selectedSeller}
+                            {selectedSeller || currentUser.name}
                         </div>
                     ) : (
                         <select value={selectedSeller} onChange={(e) => setSelectedSeller(e.target.value)} className="w-full bg-slate-50 border border-slate-300 rounded text-sm font-bold text-slate-900 p-2 focus:ring-slate-500">
@@ -243,8 +250,8 @@ export default function SellersTab({ sellers = [], settings, currentUser = { rol
                 </div>
 
                 <div className="w-full md:w-1/3">
-                     <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center gap-1"><Calendar size={12}/> PERÍODO</label>
-                     <div className="flex items-center gap-2">
+                      <label className="block text-xs font-bold text-slate-500 mb-1 flex items-center gap-1"><Calendar size={12}/> PERÍODO</label>
+                      <div className="flex items-center gap-2">
                         {/* Toggle */}
                         <div className="flex bg-slate-200 p-1 rounded-md shrink-0">
                              <button onClick={() => setViewMode('MONTH')} className={`px-2 py-1 rounded text-[10px] font-bold transition-all ${viewMode === 'MONTH' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Mês</button>
@@ -267,7 +274,7 @@ export default function SellersTab({ sellers = [], settings, currentUser = { rol
                                 </select>
                             </div>
                         )}
-                     </div>
+                      </div>
                 </div>
 
                 <div className="w-full md:w-1/4">
@@ -401,10 +408,10 @@ export default function SellersTab({ sellers = [], settings, currentUser = { rol
                                              <tr key={i} className="hover:bg-slate-100">
                                                 <td className="py-2 pl-2 text-slate-500">{new Date(item.date).toLocaleDateString()}</td>
                                                 <td className="py-2 text-slate-700 font-medium">
-                                                    <div className="flex items-center gap-2">
-                                                        <span className="truncate max-w-[150px]">{item.material}</span>
-                                                        {item.isHighValue ? <span className="flex items-center gap-1 bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded text-[9px] font-bold border border-purple-200"><Gem size={8} /> Alto</span> : <span className="flex items-center gap-1 bg-orange-50 text-orange-700 px-1.5 py-0.5 rounded text-[9px] font-bold border border-orange-100"><Layers size={8} /> Baixo</span>}
-                                                    </div>
+                                                   <div className="flex items-center gap-2">
+                                                      <span className="truncate max-w-[150px]">{item.material}</span>
+                                                      {item.isHighValue ? <span className="flex items-center gap-1 bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded text-[9px] font-bold border border-purple-200"><Gem size={8} /> Alto</span> : <span className="flex items-center gap-1 bg-orange-50 text-orange-700 px-1.5 py-0.5 rounded text-[9px] font-bold border border-orange-100"><Layers size={8} /> Baixo</span>}
+                                                   </div>
                                                 </td>
                                                 <td className="py-2 text-center text-slate-500">{item.chapa || '-'}</td>
                                                 <td className="py-2 text-right text-slate-500">{formatNum(item.m2_total)}</td>

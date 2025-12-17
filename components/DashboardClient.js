@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useMemo } from 'react'; // Adicionado useMemo
+import { useState, useRef, useMemo, useEffect } from 'react';
 import { createBrowserClient } from '@supabase/ssr';
 import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
@@ -27,7 +27,7 @@ export default function DashboardClient({
   initialSettings,
   initialExpenses,
   initialScenarios,
-  userProfile // <--- 1. Recebendo o perfil do usuário
+  userProfile 
 }) {
   const router = useRouter();
   const supabase = createBrowserClient(
@@ -35,27 +35,35 @@ export default function DashboardClient({
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
   );
 
-  // 2. Lógica de Permissão
   const isSeller = userProfile?.role === 'vendedor';
   const isAdmin = userProfile?.role === 'admin';
 
-  // 3. Ajustando aba inicial: Se for vendedor, começa em 'sellers', senão 'overview'
+  // Debug: Veja isso no Console do Navegador (F12) para corrigir o nome
+  useEffect(() => {
+    if (isSeller) {
+      console.log("--- DEBUG VENDEDOR ---");
+      console.log("Nome no Perfil (Supabase):", userProfile?.name);
+      console.log("Nomes disponíveis nas Vendas:", initialSellers?.map(s => s.name));
+      const match = initialSellers?.find(s => s.name.toLowerCase().trim() === userProfile?.name?.toLowerCase().trim());
+      console.log("Encontrou correspondência?", match ? "SIM" : "NÃO");
+      console.log("-----------------------");
+    }
+  }, [isSeller, userProfile, initialSellers]);
+
   const [activeTab, setActiveTab] = useState(isSeller ? 'sellers' : 'overview');
   const [isUploading, setIsUploading] = useState(false);
   
   const summaryData = initialSummary || [];
   const topMaterials = initialTopMaterials || [];
   
- // 4. Filtrando dados do vendedor (useMemo para performance)
+  // Lógica de Filtro
   const sellersData = useMemo(() => {
     const allSellers = initialSellers || [];
     
     if (isSeller) {
-      // BLINDAGEM: Garante que não vai quebrar se userProfile.name for nulo
       const profileName = userProfile?.name ? userProfile.name.toLowerCase().trim() : "";
       
       return allSellers.filter(s => {
-        // BLINDAGEM: Garante que não vai quebrar se s.name (do banco) for nulo
         const sellerName = s.name ? s.name.toLowerCase().trim() : "";
         return sellerName === profileName;
       });
@@ -70,13 +78,11 @@ export default function DashboardClient({
   const fileInputRef = useRef(null);
 
   const handleFileUpload = async (event) => {
-    // ... (Mantenha sua lógica de upload exatamente como está)
     const file = event.target.files?.[0];
     if (!file) return;
 
     setIsUploading(true);
     try {
-      console.log("--- INICIANDO UPLOAD ---");
       const fileName = `${Date.now()}_${file.name}`;
       const { error: uploadError } = await supabase.storage.from('uploads').upload(fileName, file);
 
@@ -99,7 +105,7 @@ export default function DashboardClient({
 
       const parsedSales = parseExcelData(jsonData, datasetData.id);
       
-      if (parsedSales.length === 0) throw new Error("Nenhuma venda válida encontrada. Verifique as colunas.");
+      if (parsedSales.length === 0) throw new Error("Nenhuma venda válida encontrada.");
 
       const chunkSize = 1000;
       let insertedCount = 0;
@@ -128,45 +134,18 @@ export default function DashboardClient({
   };
 
   const renderContent = () => {
-    // Se for vendedor e tentar acessar algo que não é 'sellers', retorna null ou força sellers
-    if (isSeller && activeTab !== 'sellers') return <SellersTab sellers={sellersData} settings={settings} />;
+    if (isSeller && activeTab !== 'sellers') return <SellersTab sellers={sellersData} settings={settings} isSeller={isSeller} />;
 
     switch (activeTab) {
       case 'overview':
-        return (
-          <OverviewTab 
-            summary={summaryData} 
-            topMaterials={topMaterials}
-            settings={settings}
-            expenses={expenses}
-          />
-        );
-      
+        return <OverviewTab summary={summaryData} topMaterials={topMaterials} settings={settings} expenses={expenses} />;
       case 'financial':
-        return (
-          <FinancialTab 
-            summary={summaryData} 
-            settings={settings}
-            expenses={expenses}
-            onSettingsChange={setSettings}
-            onExpensesChange={setExpenses}
-          />
-        );
-      
+        return <FinancialTab summary={summaryData} settings={settings} expenses={expenses} onSettingsChange={setSettings} onExpensesChange={setExpenses} />;
       case 'annual':
-        return (
-          <AnnualTab 
-            summary={summaryData} 
-            settings={settings} 
-            expenses={expenses} 
-            scenarios={manualScenarios} 
-          />
-        );
-      
+        return <AnnualTab summary={summaryData} settings={settings} expenses={expenses} scenarios={manualScenarios} />;
       case 'sellers':
-        // sellersData já está filtrado pelo useMemo lá em cima
-        return <SellersTab sellers={sellersData} settings={settings} />; 
-      
+        // AQUI: Passamos a propriedade isSeller para dentro da aba
+        return <SellersTab sellers={sellersData} settings={settings} isSeller={isSeller} />;
       default:
         return <OverviewTab summary={summaryData} topMaterials={topMaterials} />;
     }
@@ -179,7 +158,6 @@ export default function DashboardClient({
           <div className="bg-cyan-600 text-white p-1.5 rounded-lg font-bold shadow-sm">BI</div>
           <div>
             <h1 className="text-lg font-bold text-slate-800 leading-tight">Marmoraria</h1>
-            {/* 5. Exibindo nome e cargo do usuário */}
             <p className="text-xs text-slate-500">
               {userProfile?.name || 'Gestão'} ({isSeller ? 'Vendedor' : 'Diretoria'})
             </p>
@@ -187,7 +165,6 @@ export default function DashboardClient({
         </div>
 
         <nav className="flex-1 p-4 space-y-1">
-          {/* 6. Renderização Condicional do Menu */}
           {!isSeller && (
             <>
               <SidebarItem icon={<LayoutDashboard size={20} />} label="Visão Geral" active={activeTab === 'overview'} onClick={() => setActiveTab('overview')} />
@@ -199,7 +176,6 @@ export default function DashboardClient({
         </nav>
 
         <div className="p-4 border-t border-slate-100 space-y-3">
-          {/* 7. Esconde Upload se for vendedor */}
           {!isSeller && (
             <div className="relative">
               <input type="file" accept=".xlsx, .xls" className="hidden" ref={fileInputRef} onChange={handleFileUpload} disabled={isUploading} />
@@ -217,10 +193,7 @@ export default function DashboardClient({
         <header className="bg-white border-b border-slate-200 p-4 flex justify-between items-center md:hidden sticky top-0 z-20">
           <div className="flex items-center gap-2">
             <div className="bg-cyan-600 text-white p-1 rounded font-bold text-xs">BI</div>
-            <div>
-               <h1 className="font-bold text-slate-800">Marmoraria</h1>
-               <span className="text-xs text-slate-500 block">{userProfile?.name}</span>
-            </div>
+            <div><h1 className="font-bold text-slate-800">Marmoraria</h1><span className="text-xs text-slate-500 block">{userProfile?.name}</span></div>
           </div>
           <button onClick={handleLogout} className="text-xs text-red-600 font-bold">Sair</button>
         </header>
