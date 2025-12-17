@@ -65,52 +65,72 @@ export default function DashboardClient({
   const manualScenarios = initialScenarios || []; 
   const fileInputRef = useRef(null);
 
-  const handleFileUpload = async (event) => {
+ const handleFileUpload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     setIsUploading(true);
     try {
+      console.log("1. Iniciando Upload...");
       const fileName = `${Date.now()}_${file.name}`;
+      
+      // Upload do arquivo físico
       const { error: uploadError } = await supabase.storage.from('uploads').upload(fileName, file);
-      if (uploadError) console.warn("Upload Storage falhou:", uploadError);
+      if (uploadError) console.warn("Aviso Storage:", uploadError.message);
 
-      // 1. Cria o Dataset
+      // Cria o registro do Dataset
       const { data: datasetData, error: datasetError } = await supabase
         .from('datasets')
         .insert([{ name: file.name, uploaded_at: new Date() }])
         .select().single();
 
-      if (datasetError) throw new Error(`Erro dataset: ${datasetError.message}`);
+      if (datasetError) throw new Error(`Erro ao criar Dataset: ${datasetError.message}`);
+      console.log("2. Dataset Criado com ID:", datasetData.id);
 
+      // Lê o Excel
       const buffer = await file.arrayBuffer();
       const workbook = XLSX.read(buffer, { type: 'array' });
-      const jsonData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: "" });
+      const sheetName = workbook.SheetNames[0];
+      const jsonData = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: "" });
       
-      if (jsonData.length === 0) throw new Error("Planilha vazia.");
+      console.log("3. Linhas brutas no Excel:", jsonData.length);
+      if (jsonData.length > 0) {
+          console.log("   Exemplo da primeira linha bruta:", jsonData[0]);
+      }
 
-      // 2. Parser com ID do Dataset
+      // Processa os dados
       const parsedSales = parseExcelData(jsonData, datasetData.id);
-      
-      if (parsedSales.length === 0) throw new Error("Nenhuma venda válida.");
+      console.log("4. Linhas Válidas após Parser:", parsedSales.length);
 
+      if (parsedSales.length === 0) {
+          alert("ERRO CRÍTICO: O Excel foi lido, mas nenhuma linha foi considerada válida.\n\nVerifique se as colunas 'Data' e 'Valor' (ou PrecoUnit) existem na planilha.");
+          throw new Error("Parser retornou 0 vendas.");
+      }
+
+      console.log("   Exemplo de venda processada:", parsedSales[0]);
+
+      // Insere em lotes (Chunks)
       const chunkSize = 1000;
       let insertedCount = 0;
       for (let i = 0; i < parsedSales.length; i += chunkSize) {
         const chunk = parsedSales.slice(i, i + chunkSize);
         const { error: insertError } = await supabase.from('sales').insert(chunk);
-        if (insertError) throw insertError;
+        if (insertError) {
+            console.error("Erro ao inserir lote:", insertError);
+            throw insertError;
+        }
         insertedCount += chunk.length;
+        console.log(`   Inserido lote: ${insertedCount} / ${parsedSales.length}`);
       }
 
       alert(`Sucesso! ${insertedCount} vendas importadas.`);
       
-      // 3. Força recarregamento já no novo dataset
+      // Força atualização da página
       router.push(`/?datasetId=${datasetData.id}`); 
       router.refresh();
 
     } catch (error) {
-      console.error(error);
+      console.error("Erro Geral:", error);
       alert(`Erro: ${error.message}`);
     } finally {
       setIsUploading(false);
