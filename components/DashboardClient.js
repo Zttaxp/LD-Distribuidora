@@ -6,13 +6,7 @@ import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import { parseExcelData } from '@/lib/parser';
 import { 
-  LayoutDashboard, 
-  DollarSign, 
-  FileText, 
-  Users, 
-  Upload, 
-  Loader2,
-  LogOut 
+  LayoutDashboard, DollarSign, FileText, Users, Upload, Loader2, LogOut, FileSpreadsheet 
 } from 'lucide-react';
 
 import OverviewTab from '@/components/tabs/OverviewTab';
@@ -27,7 +21,9 @@ export default function DashboardClient({
   initialSettings,
   initialExpenses,
   initialScenarios,
-  userProfile 
+  userProfile,
+  datasets = [],        // Nova prop: Lista de arquivos
+  currentDatasetId      // Nova prop: Arquivo atual
 }) {
   const router = useRouter();
   const supabase = createBrowserClient(
@@ -36,36 +32,28 @@ export default function DashboardClient({
   );
 
   const isSeller = userProfile?.role === 'vendedor';
-  const isAdmin = userProfile?.role === 'admin';
-
-  // --- CORREÇÃO DO DEBUG ---
-  useEffect(() => {
-    if (isSeller) {
-      console.log("--- DEBUG VENDEDOR (CORRIGIDO) ---");
-      console.log("Perfil:", userProfile?.name);
-      // Agora olhamos para s.seller, que é o campo correto
-      console.log("Nomes na base:", initialSellers?.map(s => s.seller));
-    }
-  }, [isSeller, userProfile, initialSellers]);
 
   const [activeTab, setActiveTab] = useState(isSeller ? 'sellers' : 'overview');
   const [isUploading, setIsUploading] = useState(false);
   
+  // --- STATE DO DATASET ---
+  // Quando muda o select, damos um push na URL para recarregar os dados
+  const handleDatasetChange = (e) => {
+    const newId = e.target.value;
+    router.push(`/?datasetId=${newId}`);
+  };
+
   const summaryData = initialSummary || [];
   const topMaterials = initialTopMaterials || [];
   
-  // --- LÓGICA DE FILTRO CORRIGIDA (CRUCIAL) ---
+  // Filtro de Vendedores
   const sellersData = useMemo(() => {
     const allSellers = initialSellers || [];
-    
     if (isSeller) {
-      // Blindagem: Converte para string segura antes de dar toLowerCase
       const profileName = (userProfile?.name || "").toLowerCase().trim();
-      
       return allSellers.filter(s => {
-        // CORREÇÃO: Usar s.seller em vez de s.name
-        // A (s.seller || s.name || "") garante que tenta as duas opções e não quebra se for null
-        const sellerNameFromDB = (s.seller || s.name || "").toLowerCase().trim();
+        // Nota: A view nova no SQL já retorna 'name', mas mantemos compatibilidade
+        const sellerNameFromDB = (s.name || s.seller || "").toLowerCase().trim();
         return sellerNameFromDB === profileName;
       });
     }
@@ -75,7 +63,6 @@ export default function DashboardClient({
   const [settings, setSettings] = useState(initialSettings || { tax_rate: 6, comm_rate: 3, bad_debt_rate: 0 });
   const [expenses, setExpenses] = useState(initialExpenses || []);
   const manualScenarios = initialScenarios || []; 
-
   const fileInputRef = useRef(null);
 
   const handleFileUpload = async (event) => {
@@ -86,9 +73,9 @@ export default function DashboardClient({
     try {
       const fileName = `${Date.now()}_${file.name}`;
       const { error: uploadError } = await supabase.storage.from('uploads').upload(fileName, file);
-
       if (uploadError) console.warn("Upload Storage falhou:", uploadError);
 
+      // 1. Cria o Dataset
       const { data: datasetData, error: datasetError } = await supabase
         .from('datasets')
         .insert([{ name: file.name, uploaded_at: new Date() }])
@@ -98,15 +85,14 @@ export default function DashboardClient({
 
       const buffer = await file.arrayBuffer();
       const workbook = XLSX.read(buffer, { type: 'array' });
-      const sheetName = workbook.SheetNames[0];
-      const worksheet = workbook.Sheets[sheetName];
-      const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+      const jsonData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: "" });
       
       if (jsonData.length === 0) throw new Error("Planilha vazia.");
 
+      // 2. Parser com ID do Dataset
       const parsedSales = parseExcelData(jsonData, datasetData.id);
       
-      if (parsedSales.length === 0) throw new Error("Nenhuma venda válida encontrada.");
+      if (parsedSales.length === 0) throw new Error("Nenhuma venda válida.");
 
       const chunkSize = 1000;
       let insertedCount = 0;
@@ -118,7 +104,10 @@ export default function DashboardClient({
       }
 
       alert(`Sucesso! ${insertedCount} vendas importadas.`);
-      router.refresh(); 
+      
+      // 3. Força recarregamento já no novo dataset
+      router.push(`/?datasetId=${datasetData.id}`); 
+      router.refresh();
 
     } catch (error) {
       console.error(error);
@@ -138,30 +127,43 @@ export default function DashboardClient({
     if (isSeller && activeTab !== 'sellers') return <SellersTab sellers={sellersData} settings={settings} currentUser={userProfile} />;
 
     switch (activeTab) {
-      case 'overview':
-        return <OverviewTab summary={summaryData} topMaterials={topMaterials} settings={settings} expenses={expenses} />;
-      case 'financial':
-        return <FinancialTab summary={summaryData} settings={settings} expenses={expenses} onSettingsChange={setSettings} onExpensesChange={setExpenses} />;
-      case 'annual':
-        return <AnnualTab summary={summaryData} settings={settings} expenses={expenses} scenarios={manualScenarios} />;
-      case 'sellers':
-        // AQUI: Passamos currentUser em vez de isSeller, para bater com o SellersTab novo
-        return <SellersTab sellers={sellersData} settings={settings} currentUser={userProfile} />;
-      default:
-        return <OverviewTab summary={summaryData} topMaterials={topMaterials} />;
+      case 'overview': return <OverviewTab summary={summaryData} topMaterials={topMaterials} settings={settings} expenses={expenses} />;
+      case 'financial': return <FinancialTab summary={summaryData} settings={settings} expenses={expenses} onSettingsChange={setSettings} onExpensesChange={setExpenses} />;
+      case 'annual': return <AnnualTab summary={summaryData} settings={settings} expenses={expenses} scenarios={manualScenarios} />;
+      case 'sellers': return <SellersTab sellers={sellersData} settings={settings} currentUser={userProfile} />;
+      default: return <OverviewTab summary={summaryData} topMaterials={topMaterials} />;
     }
   };
 
   return (
     <div className="flex h-screen bg-slate-50">
       <aside className="w-64 bg-white border-r border-slate-200 hidden md:flex flex-col shadow-sm z-10">
-        <div className="p-6 border-b border-slate-100 flex items-center gap-2">
-          <div className="bg-cyan-600 text-white p-1.5 rounded-lg font-bold shadow-sm">BI</div>
-          <div>
-            <h1 className="text-lg font-bold text-slate-800 leading-tight">Marmoraria</h1>
-            <p className="text-xs text-slate-500">
-              {userProfile?.name || 'Gestão'} ({isSeller ? 'Vendedor' : 'Diretoria'})
-            </p>
+        <div className="p-6 border-b border-slate-100 flex flex-col gap-4">
+          <div className="flex items-center gap-2">
+             <div className="bg-cyan-600 text-white p-1.5 rounded-lg font-bold shadow-sm">BI</div>
+             <div>
+               <h1 className="text-lg font-bold text-slate-800 leading-tight">Marmoraria</h1>
+               <p className="text-xs text-slate-500">{userProfile?.name} ({isSeller ? 'Vendedor' : 'Diretoria'})</p>
+             </div>
+          </div>
+
+          {/* --- SELETOR DE DATASET (NOVO) --- */}
+          <div className="w-full">
+            <label className="text-[10px] uppercase font-bold text-slate-400 mb-1 flex items-center gap-1">
+              <FileSpreadsheet size={12}/> Arquivo Ativo
+            </label>
+            <select 
+              value={currentDatasetId || ""} 
+              onChange={handleDatasetChange}
+              className="w-full text-xs p-2 rounded border border-slate-200 bg-slate-50 font-medium text-slate-700 focus:outline-none focus:border-cyan-500"
+            >
+              {datasets.length === 0 && <option value="">Nenhum arquivo</option>}
+              {datasets.map(ds => (
+                <option key={ds.id} value={ds.id}>
+                  {ds.name} ({new Date(ds.uploaded_at).toLocaleDateString()})
+                </option>
+              ))}
+            </select>
           </div>
         </div>
 
@@ -169,7 +171,7 @@ export default function DashboardClient({
           {!isSeller && (
             <>
               <SidebarItem icon={<LayoutDashboard size={20} />} label="Visão Geral" active={activeTab === 'overview'} onClick={() => setActiveTab('overview')} />
-              <SidebarItem icon={<DollarSign size={20} />} label="Simulador Financeiro" active={activeTab === 'financial'} onClick={() => setActiveTab('financial')} />
+              <SidebarItem icon={<DollarSign size={20} />} label="Simulador" active={activeTab === 'financial'} onClick={() => setActiveTab('financial')} />
               <SidebarItem icon={<FileText size={20} />} label="Relatório Anual" active={activeTab === 'annual'} onClick={() => setActiveTab('annual')} />
             </>
           )}
@@ -182,7 +184,7 @@ export default function DashboardClient({
               <input type="file" accept=".xlsx, .xls" className="hidden" ref={fileInputRef} onChange={handleFileUpload} disabled={isUploading} />
               <button onClick={() => fileInputRef.current?.click()} disabled={isUploading} className={`w-full flex items-center justify-center gap-2 p-3 rounded-lg text-sm font-bold transition-all shadow-sm ${isUploading ? 'bg-slate-100 text-slate-400' : 'bg-cyan-600 text-white hover:bg-cyan-700'}`}>
                 {isUploading ? <Loader2 className="animate-spin" size={18} /> : <Upload size={18} />}
-                {isUploading ? 'Processando...' : 'Carregar Planilha'}
+                {isUploading ? 'Carregando...' : 'Nova Planilha'}
               </button>
             </div>
           )}
@@ -194,7 +196,13 @@ export default function DashboardClient({
         <header className="bg-white border-b border-slate-200 p-4 flex justify-between items-center md:hidden sticky top-0 z-20">
           <div className="flex items-center gap-2">
             <div className="bg-cyan-600 text-white p-1 rounded font-bold text-xs">BI</div>
-            <div><h1 className="font-bold text-slate-800">Marmoraria</h1><span className="text-xs text-slate-500 block">{userProfile?.name}</span></div>
+            <select 
+              value={currentDatasetId || ""} 
+              onChange={handleDatasetChange}
+              className="text-xs p-1 rounded border border-slate-200 bg-white max-w-[150px]"
+            >
+              {datasets.map(ds => <option key={ds.id} value={ds.id}>{ds.name}</option>)}
+            </select>
           </div>
           <button onClick={handleLogout} className="text-xs text-red-600 font-bold">Sair</button>
         </header>

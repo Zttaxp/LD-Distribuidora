@@ -2,12 +2,20 @@ import { createClient } from '@/utils/supabase/server';
 import DashboardClient from '@/components/DashboardClient';
 import DashboardSkeleton from '@/components/ui/DashboardSkeleton';
 import { Suspense } from 'react';
-import { redirect } from 'next/navigation'; // <--- IMPORTANTE: Adicionar isso
+import { redirect } from 'next/navigation';
 
 export const dynamic = 'force-dynamic';
 
-async function loadDashboardData() {
+async function loadDashboardData(datasetId) {
   const supabase = await createClient();
+
+  // Se não tem datasetId, não carrega nada (ou carrega vazio)
+  if (!datasetId) {
+    return {
+      salesSummary: [], topMaterials: [], sellersSummary: [], 
+      appSettings: {}, expenses: [], manualScenarios: []
+    };
+  }
 
   const [
     summaryResult, 
@@ -17,9 +25,9 @@ async function loadDashboardData() {
     expensesResult,
     scenariosResult 
   ] = await Promise.all([
-    supabase.from('monthly_sales_summary').select('*'),
-    supabase.from('top_materials_summary').select('*'),
-    supabase.from('sellers_summary').select('*'),
+    supabase.from('monthly_sales_summary').select('*').eq('dataset_id', datasetId),
+    supabase.from('top_materials_summary').select('*').eq('dataset_id', datasetId),
+    supabase.from('sellers_summary').select('*').eq('dataset_id', datasetId), // Agora filtra pelo ID
     supabase.from('app_settings').select('*').single(),
     supabase.from('expenses').select('*'),
     supabase.from('manual_scenarios').select('*') 
@@ -35,31 +43,30 @@ async function loadDashboardData() {
   };
 }
 
-export default async function Page() {
-  // 1. Cria o cliente para verificar autenticação
+export default async function Page({ searchParams }) {
   const supabase = await createClient();
 
-  // 2. Verifica se o usuário está logado
+  // 1. Auth Check
   const { data: { user }, error } = await supabase.auth.getUser();
-  if (error || !user) {
-    redirect('/login');
-  }
+  if (error || !user) redirect('/login');
 
-  // 3. Busca o PERFIL (Role e Nome) - A Lógica Nova
+  // 2. Busca Perfil
   let userProfile = { role: 'vendedor', name: '' };
-  
-  const { data: profile } = await supabase
-    .from('profiles')
+  const { data: profile } = await supabase.from('profiles').select('*').eq('id', user.id).single();
+  if (profile) userProfile = profile;
+
+  // 3. Busca lista de Datasets (Arquivos) para o menu
+  const { data: datasets } = await supabase
+    .from('datasets')
     .select('*')
-    .eq('id', user.id)
-    .single();
+    .order('uploaded_at', { ascending: false });
 
-  if (profile) {
-    userProfile = profile;
-  }
+  // 4. Define qual Dataset mostrar
+  // Se veio na URL (?datasetId=123), usa ele. Se não, usa o mais recente da lista.
+  const currentDatasetId = searchParams?.datasetId || datasets?.[0]?.id;
 
-  // 4. Carrega os dados (Sua lógica original)
-  const data = await loadDashboardData();
+  // 5. Carrega dados filtrados
+  const data = await loadDashboardData(currentDatasetId);
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -71,8 +78,10 @@ export default async function Page() {
           initialSettings={data.appSettings}
           initialExpenses={data.expenses}
           initialScenarios={data.manualScenarios}
-          // 5. Passamos o perfil para o cliente decidir o que mostrar
-          userProfile={userProfile} 
+          userProfile={userProfile}
+          // NOVAS PROPS:
+          datasets={datasets || []}
+          currentDatasetId={currentDatasetId}
         />
       </Suspense>
     </main>
