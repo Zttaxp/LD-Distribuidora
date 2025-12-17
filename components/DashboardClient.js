@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useMemo } from 'react'; // Adicionado useMemo
 import { createBrowserClient } from '@supabase/ssr';
 import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
@@ -26,7 +26,8 @@ export default function DashboardClient({
   initialSellers,
   initialSettings,
   initialExpenses,
-  initialScenarios
+  initialScenarios,
+  userProfile // <--- 1. Recebendo o perfil do usuário
 }) {
   const router = useRouter();
   const supabase = createBrowserClient(
@@ -34,12 +35,29 @@ export default function DashboardClient({
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
   );
 
-  const [activeTab, setActiveTab] = useState('overview');
+  // 2. Lógica de Permissão
+  const isSeller = userProfile?.role === 'vendedor';
+  const isAdmin = userProfile?.role === 'admin';
+
+  // 3. Ajustando aba inicial: Se for vendedor, começa em 'sellers', senão 'overview'
+  const [activeTab, setActiveTab] = useState(isSeller ? 'sellers' : 'overview');
   const [isUploading, setIsUploading] = useState(false);
   
   const summaryData = initialSummary || [];
   const topMaterials = initialTopMaterials || [];
-  const sellersData = initialSellers || [];
+  
+  // 4. Filtrando dados do vendedor (useMemo para performance)
+  const sellersData = useMemo(() => {
+    const allSellers = initialSellers || [];
+    
+    if (isSeller && userProfile?.name) {
+      // Filtra apenas os dados onde o nome bate com o perfil do usuário
+      return allSellers.filter(s => 
+        s.name.toLowerCase() === userProfile.name.toLowerCase()
+      );
+    }
+    return allSellers;
+  }, [initialSellers, isSeller, userProfile]);
   
   const [settings, setSettings] = useState(initialSettings || { tax_rate: 6, comm_rate: 3, bad_debt_rate: 0 });
   const [expenses, setExpenses] = useState(initialExpenses || []);
@@ -48,6 +66,7 @@ export default function DashboardClient({
   const fileInputRef = useRef(null);
 
   const handleFileUpload = async (event) => {
+    // ... (Mantenha sua lógica de upload exatamente como está)
     const file = event.target.files?.[0];
     if (!file) return;
 
@@ -105,9 +124,11 @@ export default function DashboardClient({
   };
 
   const renderContent = () => {
+    // Se for vendedor e tentar acessar algo que não é 'sellers', retorna null ou força sellers
+    if (isSeller && activeTab !== 'sellers') return <SellersTab sellers={sellersData} settings={settings} />;
+
     switch (activeTab) {
       case 'overview':
-        // ATUALIZADO: Passando settings e expenses para calcular o Lucro Real na Visão Geral
         return (
           <OverviewTab 
             summary={summaryData} 
@@ -139,7 +160,8 @@ export default function DashboardClient({
         );
       
       case 'sellers':
-        return <SellersTab sellers={sellersData} settings={settings} />; // Passando settings para comissão
+        // sellersData já está filtrado pelo useMemo lá em cima
+        return <SellersTab sellers={sellersData} settings={settings} />; 
       
       default:
         return <OverviewTab summary={summaryData} topMaterials={topMaterials} />;
@@ -153,32 +175,49 @@ export default function DashboardClient({
           <div className="bg-cyan-600 text-white p-1.5 rounded-lg font-bold shadow-sm">BI</div>
           <div>
             <h1 className="text-lg font-bold text-slate-800 leading-tight">Marmoraria</h1>
-            <p className="text-xs text-slate-500">Gestão Integrada</p>
+            {/* 5. Exibindo nome e cargo do usuário */}
+            <p className="text-xs text-slate-500">
+              {userProfile?.name || 'Gestão'} ({isSeller ? 'Vendedor' : 'Diretoria'})
+            </p>
           </div>
         </div>
 
         <nav className="flex-1 p-4 space-y-1">
-          <SidebarItem icon={<LayoutDashboard size={20} />} label="Visão Geral" active={activeTab === 'overview'} onClick={() => setActiveTab('overview')} />
-          <SidebarItem icon={<DollarSign size={20} />} label="Simulador Financeiro" active={activeTab === 'financial'} onClick={() => setActiveTab('financial')} />
-          <SidebarItem icon={<FileText size={20} />} label="Relatório Anual" active={activeTab === 'annual'} onClick={() => setActiveTab('annual')} />
+          {/* 6. Renderização Condicional do Menu */}
+          {!isSeller && (
+            <>
+              <SidebarItem icon={<LayoutDashboard size={20} />} label="Visão Geral" active={activeTab === 'overview'} onClick={() => setActiveTab('overview')} />
+              <SidebarItem icon={<DollarSign size={20} />} label="Simulador Financeiro" active={activeTab === 'financial'} onClick={() => setActiveTab('financial')} />
+              <SidebarItem icon={<FileText size={20} />} label="Relatório Anual" active={activeTab === 'annual'} onClick={() => setActiveTab('annual')} />
+            </>
+          )}
           <SidebarItem icon={<Users size={20} />} label="Vendedores" active={activeTab === 'sellers'} onClick={() => setActiveTab('sellers')} />
         </nav>
 
         <div className="p-4 border-t border-slate-100 space-y-3">
-          <div className="relative">
-            <input type="file" accept=".xlsx, .xls" className="hidden" ref={fileInputRef} onChange={handleFileUpload} disabled={isUploading} />
-            <button onClick={() => fileInputRef.current?.click()} disabled={isUploading} className={`w-full flex items-center justify-center gap-2 p-3 rounded-lg text-sm font-bold transition-all shadow-sm ${isUploading ? 'bg-slate-100 text-slate-400' : 'bg-cyan-600 text-white hover:bg-cyan-700'}`}>
-              {isUploading ? <Loader2 className="animate-spin" size={18} /> : <Upload size={18} />}
-              {isUploading ? 'Processando...' : 'Carregar Planilha'}
-            </button>
-          </div>
+          {/* 7. Esconde Upload se for vendedor */}
+          {!isSeller && (
+            <div className="relative">
+              <input type="file" accept=".xlsx, .xls" className="hidden" ref={fileInputRef} onChange={handleFileUpload} disabled={isUploading} />
+              <button onClick={() => fileInputRef.current?.click()} disabled={isUploading} className={`w-full flex items-center justify-center gap-2 p-3 rounded-lg text-sm font-bold transition-all shadow-sm ${isUploading ? 'bg-slate-100 text-slate-400' : 'bg-cyan-600 text-white hover:bg-cyan-700'}`}>
+                {isUploading ? <Loader2 className="animate-spin" size={18} /> : <Upload size={18} />}
+                {isUploading ? 'Processando...' : 'Carregar Planilha'}
+              </button>
+            </div>
+          )}
           <button onClick={handleLogout} className="w-full flex items-center justify-center gap-2 p-2 text-sm text-red-500 hover:bg-red-50 rounded-lg font-medium"><LogOut size={16} /> Sair</button>
         </div>
       </aside>
 
       <main className="flex-1 overflow-y-auto custom-scroll">
         <header className="bg-white border-b border-slate-200 p-4 flex justify-between items-center md:hidden sticky top-0 z-20">
-          <div className="flex items-center gap-2"><div className="bg-cyan-600 text-white p-1 rounded font-bold text-xs">BI</div><h1 className="font-bold text-slate-800">Marmoraria</h1></div>
+          <div className="flex items-center gap-2">
+            <div className="bg-cyan-600 text-white p-1 rounded font-bold text-xs">BI</div>
+            <div>
+               <h1 className="font-bold text-slate-800">Marmoraria</h1>
+               <span className="text-xs text-slate-500 block">{userProfile?.name}</span>
+            </div>
+          </div>
           <button onClick={handleLogout} className="text-xs text-red-600 font-bold">Sair</button>
         </header>
         <div className="p-4 md:p-8 max-w-7xl mx-auto">{renderContent()}</div>
