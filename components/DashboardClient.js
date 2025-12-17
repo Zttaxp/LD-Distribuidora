@@ -34,9 +34,9 @@ export default function DashboardClient({
   const isSeller = userProfile?.role === 'vendedor';
   const [activeTab, setActiveTab] = useState(isSeller ? 'sellers' : 'overview');
   const [isUploading, setIsUploading] = useState(false);
-  
-  // State para garantir que código client-side só rode no cliente (evita erro #418)
   const [mounted, setMounted] = useState(false);
+
+  // Evita erro de hidratação esperando o componente montar
   useEffect(() => {
     setMounted(true);
   }, []);
@@ -72,27 +72,31 @@ export default function DashboardClient({
 
     setIsUploading(true);
     try {
-      console.log("1. Iniciando Upload...");
+      console.log("1. Upload Iniciado...");
       const fileName = `${Date.now()}_${file.name}`;
       
       const { error: uploadError } = await supabase.storage.from('uploads').upload(fileName, file);
       if (uploadError) console.warn("Aviso Storage:", uploadError.message);
 
+      // Cria registro do arquivo
       const { data: datasetData, error: datasetError } = await supabase
         .from('datasets')
         .insert([{ name: file.name, uploaded_at: new Date() }])
         .select().single();
 
-      if (datasetError) throw new Error(`Erro ao criar Dataset: ${datasetError.message}`);
+      if (datasetError) throw new Error(`Erro dataset: ${datasetError.message}`);
+      console.log("2. Dataset ID:", datasetData.id);
 
       const buffer = await file.arrayBuffer();
       const workbook = XLSX.read(buffer, { type: 'array' });
       const jsonData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { defval: "" });
       
+      // Parser
       const parsedSales = parseExcelData(jsonData, datasetData.id);
+      console.log("3. Linhas processadas:", parsedSales.length);
 
       if (parsedSales.length === 0) {
-          throw new Error("Nenhuma linha válida encontrada. Verifique as colunas 'Data' e 'Valor' na planilha.");
+          throw new Error("Planilha lida, mas nenhuma venda identificada. Verifique nomes das colunas.");
       }
 
       const chunkSize = 1000;
@@ -104,7 +108,7 @@ export default function DashboardClient({
         insertedCount += chunk.length;
       }
 
-      alert(`Sucesso! ${insertedCount} vendas importadas.`);
+      alert(`Sucesso! ${insertedCount} vendas.`);
       router.push(`/?datasetId=${datasetData.id}`); 
       router.refresh();
 
@@ -134,8 +138,7 @@ export default function DashboardClient({
     }
   };
 
-  // Se não montou ainda, exibe um loading simples para evitar erro de hidratação
-  if (!mounted) return <div className="flex items-center justify-center h-screen"><Loader2 className="animate-spin text-cyan-600"/></div>;
+  if (!mounted) return <div className="flex h-screen items-center justify-center"><Loader2 className="animate-spin text-cyan-600"/></div>;
 
   return (
     <div className="flex h-screen bg-slate-50">
@@ -160,9 +163,8 @@ export default function DashboardClient({
             >
               {datasets.length === 0 && <option value="">Nenhum arquivo</option>}
               {datasets.map(ds => (
-                // suppressHydrationWarning é o segredo para não dar erro na data
                 <option key={ds.id} value={ds.id} suppressHydrationWarning>
-                  {ds.name} ({new Date(ds.uploaded_at).toLocaleDateString()})
+                  {ds.name} ({new Date(ds.uploaded_at).toLocaleDateString('pt-BR')})
                 </option>
               ))}
             </select>
